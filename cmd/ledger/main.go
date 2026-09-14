@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
 	"github.com/use-fabrica/ledger/internal/config"
+	"github.com/use-fabrica/ledger/internal/ledger"
 	"github.com/use-fabrica/ledger/internal/rpc"
 	ledgerv1connect "github.com/use-fabrica/ledger/proto/ledger/v1/ledgerv1connect"
 )
@@ -21,7 +23,9 @@ func main() {
 			config.Load,
 			newLogger,
 			newPool,
+			ledger.New,
 			rpc.NewHealthHandler,
+			rpc.NewProvisioningHandler,
 		),
 		fx.Invoke(serve),
 	).Run()
@@ -42,11 +46,17 @@ func newPool(cfg config.Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func serve(lc fx.Lifecycle, cfg config.Config, log *zap.Logger, pool *pgxpool.Pool, health *rpc.HealthHandler) {
-	// The health service is public: no auth middleware is wired at this layer,
-	// so orchestrators can always probe liveness/readiness.
+func serve(lc fx.Lifecycle, cfg config.Config, log *zap.Logger, pool *pgxpool.Pool, health *rpc.HealthHandler, provisioning *rpc.ProvisioningHandler) {
+	// The health service is public: no auth interceptor is wired onto it, so
+	// orchestrators can always probe liveness/readiness. Every other RPC is
+	// gated by the API-key interceptor — a middleware seam that mTLS can
+	// replace without touching handlers.
 	mux := http.NewServeMux()
 	mux.Handle(ledgerv1connect.NewHealthServiceHandler(health))
+	mux.Handle(ledgerv1connect.NewProvisioningServiceHandler(
+		provisioning,
+		connect.WithInterceptors(rpc.NewAuthInterceptor(cfg.APIKey)),
+	))
 
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: mux}
 

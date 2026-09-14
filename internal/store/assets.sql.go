@@ -9,6 +9,37 @@ import (
 	"context"
 )
 
+const createAsset = `-- name: CreateAsset :one
+INSERT INTO assets (id, code, precision, metadata)
+VALUES ($1, $2, $3, $4)
+RETURNING id, code, precision, metadata, created_at
+`
+
+type CreateAssetParams struct {
+	ID        string
+	Code      string
+	Precision int32
+	Metadata  []byte
+}
+
+func (q *Queries) CreateAsset(ctx context.Context, arg CreateAssetParams) (Asset, error) {
+	row := q.db.QueryRow(ctx, createAsset,
+		arg.ID,
+		arg.Code,
+		arg.Precision,
+		arg.Metadata,
+	)
+	var i Asset
+	err := row.Scan(
+		&i.ID,
+		&i.Code,
+		&i.Precision,
+		&i.Metadata,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getAsset = `-- name: GetAsset :one
 SELECT id, code, precision, metadata, created_at
 FROM assets
@@ -26,4 +57,36 @@ func (q *Queries) GetAsset(ctx context.Context, id string) (Asset, error) {
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listAssets = `-- name: ListAssets :many
+SELECT id, code, precision, metadata, created_at
+FROM assets
+ORDER BY created_at, id
+`
+
+func (q *Queries) ListAssets(ctx context.Context) ([]Asset, error) {
+	rows, err := q.db.Query(ctx, listAssets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Asset
+	for rows.Next() {
+		var i Asset
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.Precision,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
