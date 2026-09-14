@@ -67,3 +67,38 @@ func (q *Queries) GetWalletBalances(ctx context.Context, walletID string) ([]Get
 	}
 	return items, nil
 }
+
+const lockBalance = `-- name: LockBalance :one
+SELECT account_id, posted, pending, updated_at
+FROM balances
+WHERE account_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockBalance(ctx context.Context, accountID string) (Balance, error) {
+	row := q.db.QueryRow(ctx, lockBalance, accountID)
+	var i Balance
+	err := row.Scan(
+		&i.AccountID,
+		&i.Posted,
+		&i.Pending,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateBalancePosted = `-- name: UpdateBalancePosted :exec
+UPDATE balances
+SET posted = posted + $2, updated_at = now()
+WHERE account_id = $1
+`
+
+type UpdateBalancePostedParams struct {
+	AccountID string
+	Posted    decimal.Decimal
+}
+
+func (q *Queries) UpdateBalancePosted(ctx context.Context, arg UpdateBalancePostedParams) error {
+	_, err := q.db.Exec(ctx, updateBalancePosted, arg.AccountID, arg.Posted)
+	return err
+}

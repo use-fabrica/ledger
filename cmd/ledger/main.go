@@ -26,6 +26,7 @@ func main() {
 			ledger.New,
 			rpc.NewHealthHandler,
 			rpc.NewProvisioningHandler,
+			rpc.NewPostingHandler,
 		),
 		fx.Invoke(serve),
 	).Run()
@@ -46,7 +47,7 @@ func newPool(cfg config.Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func serve(lc fx.Lifecycle, cfg config.Config, log *zap.Logger, pool *pgxpool.Pool, health *rpc.HealthHandler, provisioning *rpc.ProvisioningHandler) {
+func serve(lc fx.Lifecycle, cfg config.Config, log *zap.Logger, pool *pgxpool.Pool, health *rpc.HealthHandler, provisioning *rpc.ProvisioningHandler, posting *rpc.PostingHandler) {
 	// The health service is public: no auth interceptor is wired onto it, so
 	// orchestrators can always probe liveness/readiness. Every other RPC is
 	// gated by the API-key interceptor — a middleware seam that mTLS can
@@ -55,6 +56,10 @@ func serve(lc fx.Lifecycle, cfg config.Config, log *zap.Logger, pool *pgxpool.Po
 	mux.Handle(ledgerv1connect.NewHealthServiceHandler(health))
 	mux.Handle(ledgerv1connect.NewProvisioningServiceHandler(
 		provisioning,
+		connect.WithInterceptors(rpc.NewAuthInterceptor(cfg.APIKey)),
+	))
+	mux.Handle(ledgerv1connect.NewPostingServiceHandler(
+		posting,
 		connect.WithInterceptors(rpc.NewAuthInterceptor(cfg.APIKey)),
 	))
 
