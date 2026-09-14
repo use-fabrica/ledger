@@ -1,0 +1,3 @@
+# Double-entry, append-only journal with materialized balances
+
+All value movement is modeled as double-entry bookkeeping: every transaction contains two or more immutable, signed entries whose net effect per asset is zero. The journal is append-only — history is never updated or deleted; errors are fixed with compensating transactions. Because summing entries on every read does not scale, each account's balance is materialized in a balance row updated in the same database transaction that inserts the entries, keeping the two in lockstep by construction. We considered single-entry "balance column + transaction log" modeling and rejected it: transfers, fees, and multi-party movements become awkward and the audit trail is weaker.
