@@ -750,12 +750,16 @@ func (x *GetWalletBalancesRequest) GetWalletId() string {
 
 // AccountBalance is one account of the wallet with its materialized
 // balances. Amounts are decimal strings (e.g. "1234.56") in the account's
-// asset precision, matching shopspring/decimal serialization.
+// asset precision, matching shopspring/decimal serialization. pending
+// holds net earmarked amounts with the same sign as the holds' entries
+// (negative for outgoing), so available = posted + pending is what the
+// account can still spend.
 type AccountBalance struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Account       *Account               `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
 	Posted        string                 `protobuf:"bytes,2,opt,name=posted,proto3" json:"posted,omitempty"`
 	Pending       string                 `protobuf:"bytes,3,opt,name=pending,proto3" json:"pending,omitempty"`
+	Available     string                 `protobuf:"bytes,4,opt,name=available,proto3" json:"available,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -807,6 +811,13 @@ func (x *AccountBalance) GetPosted() string {
 func (x *AccountBalance) GetPending() string {
 	if x != nil {
 		return x.Pending
+	}
+	return ""
+}
+
+func (x *AccountBalance) GetAvailable() string {
+	if x != nil {
+		return x.Available
 	}
 	return ""
 }
@@ -917,11 +928,12 @@ const file_ledger_v1_provisioning_proto_rawDesc = "" +
 	"\x0eallow_negative\x18\x03 \x01(\bH\x00R\rallowNegative\x88\x01\x01B\x11\n" +
 	"\x0f_allow_negative\"7\n" +
 	"\x18GetWalletBalancesRequest\x12\x1b\n" +
-	"\twallet_id\x18\x01 \x01(\tR\bwalletId\"p\n" +
+	"\twallet_id\x18\x01 \x01(\tR\bwalletId\"\x8e\x01\n" +
 	"\x0eAccountBalance\x12,\n" +
 	"\aaccount\x18\x01 \x01(\v2\x12.ledger.v1.AccountR\aaccount\x12\x16\n" +
 	"\x06posted\x18\x02 \x01(\tR\x06posted\x12\x18\n" +
-	"\apending\x18\x03 \x01(\tR\apending\"o\n" +
+	"\apending\x18\x03 \x01(\tR\apending\x12\x1c\n" +
+	"\tavailable\x18\x04 \x01(\tR\tavailable\"o\n" +
 	"\x19GetWalletBalancesResponse\x12\x1b\n" +
 	"\twallet_id\x18\x01 \x01(\tR\bwalletId\x125\n" +
 	"\bbalances\x18\x02 \x03(\v2\x19.ledger.v1.AccountBalanceR\bbalances*q\n" +

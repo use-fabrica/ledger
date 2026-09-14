@@ -76,9 +76,10 @@ func entry(accountID, amount string) *ledgerv1.TransactionInputEntry {
 
 func stringPtr(s string) *string { return &s }
 
-// fxBalance reads the materialized posted balance of one account through
-// the API, searching the wallets the fixture created.
-func fxBalance(t *testing.T, env *env, fx postingFixture, accountID string) decimal.Decimal {
+// fxAccountBalance reads the materialized posted, pending, and available
+// balances of one account through the API, searching the wallets the
+// fixture created.
+func fxAccountBalance(t *testing.T, env *env, fx postingFixture, accountID string) *ledgerv1.AccountBalance {
 	t.Helper()
 	for _, walletID := range fx.wallets {
 		req := connect.NewRequest(&ledgerv1.GetWalletBalancesRequest{WalletId: walletID})
@@ -89,30 +90,85 @@ func fxBalance(t *testing.T, env *env, fx postingFixture, accountID string) deci
 		}
 		for _, b := range resp.Msg.GetBalances() {
 			if b.GetAccount().GetId() == accountID {
-				got, err := decimal.NewFromString(b.GetPosted())
-				if err != nil {
-					t.Fatalf("balance %q is not a decimal: %v", b.GetPosted(), err)
-				}
-				return got
+				return b
 			}
 		}
 	}
 	t.Fatalf("account %s not found in fixture wallets", accountID)
-	return decimal.Zero
+	return nil
 }
 
 // assertBalance fails unless the account's posted balance equals want
 // (compared numerically — Postgres normalizes NUMERIC display scale).
 func assertBalance(t *testing.T, env *env, fx postingFixture, accountID, want string) {
 	t.Helper()
-	got := fxBalance(t, env, fx, accountID)
+	assertAmount(t, "posted", accountID, fxAccountBalance(t, env, fx, accountID).GetPosted(), want)
+}
+
+// assertBalances fails unless the account's posted, pending, and
+// available balances equal the wants (compared numerically).
+func assertBalances(t *testing.T, env *env, fx postingFixture, accountID, posted, pending, available string) {
+	t.Helper()
+	b := fxAccountBalance(t, env, fx, accountID)
+	assertAmount(t, "posted", accountID, b.GetPosted(), posted)
+	assertAmount(t, "pending", accountID, b.GetPending(), pending)
+	assertAmount(t, "available", accountID, b.GetAvailable(), available)
+}
+
+func assertAmount(t *testing.T, column, accountID, got, want string) {
+	t.Helper()
+	gd, err := decimal.NewFromString(got)
+	if err != nil {
+		t.Fatalf("%s balance of %s = %q, not a decimal: %v", column, accountID, got, err)
+	}
 	wd, err := decimal.NewFromString(want)
 	if err != nil {
 		t.Fatalf("bad want amount %q: %v", want, err)
 	}
-	if !got.Equal(wd) {
-		t.Fatalf("posted balance of %s = %s, want %s", accountID, got, want)
+	if !gd.Equal(wd) {
+		t.Fatalf("%s balance of %s = %s, want %s", column, accountID, got, want)
 	}
+}
+
+// createPending sends CreatePendingTransaction with one entry per
+// account/amount pair.
+func createPending(t *testing.T, env *env, key, reference string, entries ...*ledgerv1.TransactionInputEntry) (*ledgerv1.Transaction, error) {
+	t.Helper()
+	req := connect.NewRequest(&ledgerv1.CreatePendingTransactionRequest{
+		IdempotencyKey: key,
+		Reference:      stringPtr(reference),
+		Entries:        entries,
+	})
+	req.Header().Set("X-Api-Key", testAPIKey)
+	resp, err := env.posting.CreatePendingTransaction(context.Background(), req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// postPending settles a pending transaction via PostTransaction.
+func postPending(t *testing.T, env *env, id string) (*ledgerv1.Transaction, error) {
+	t.Helper()
+	req := connect.NewRequest(&ledgerv1.PostTransactionRequest{Id: id})
+	req.Header().Set("X-Api-Key", testAPIKey)
+	resp, err := env.posting.PostTransaction(context.Background(), req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// voidPending releases a pending transaction via VoidTransaction.
+func voidPending(t *testing.T, env *env, id string) (*ledgerv1.Transaction, error) {
+	t.Helper()
+	req := connect.NewRequest(&ledgerv1.VoidTransactionRequest{Id: id})
+	req.Header().Set("X-Api-Key", testAPIKey)
+	resp, err := env.posting.VoidTransaction(context.Background(), req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 // TestFundingFromSystemAccount: value enters via a system account that may
@@ -405,4 +461,336 @@ func getTransaction(t *testing.T, env *env, id string) (*ledgerv1.Transaction, e
 		return nil, err
 	}
 	return resp.Msg, nil
+}
+
+// TestPendingCreationEarmarksOnly: creating a pending transaction moves
+// the pending column only; posted balances are untouched and available
+// (posted + pending) reflects the earmark.
+func TestPendingCreationEarmarksOnly(t *testing.T) {
+	env := setup(t)
+	fx := newPostingFixture(t, env)
+
+	if _, err := post(t, env, "fund", "",
+		entry(fx.system.GetId(), "-100.00"),
+		entry(fx.user.GetId(), "100.00"),
+	); err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+
+	pending, err := createPending(t, env, "hold-1", "auth-1",
+		entry(fx.user.GetId(), "-30.00"),
+		entry(fx.system.GetId(), "30.00"),
+	)
+	if err != nil {
+		t.Fatalf("CreatePendingTransaction: %v", err)
+	}
+	if pending.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING {
+		t.Fatalf("status = %v, want PENDING", pending.GetStatus())
+	}
+	if pending.GetPostedAt() != nil {
+		t.Fatal("pending transaction must not carry posted_at")
+	}
+	if pending.GetVoidedAt() != nil {
+		t.Fatal("pending transaction must not carry voided_at")
+	}
+	if len(pending.GetEntries()) != 2 {
+		t.Fatalf("got %d entries, want 2", len(pending.GetEntries()))
+	}
+
+	// The earmark moved pending only; available excludes the outgoing hold.
+	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "-30.00", "70.00")
+	assertBalances(t, env, fx, fx.system.GetId(), "-100.00", "30.00", "-70.00")
+
+	got, err := getTransaction(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("GetTransaction: %v", err)
+	}
+	if got.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING {
+		t.Fatalf("GetTransaction status = %v, want PENDING", got.GetStatus())
+	}
+}
+
+// TestPostPendingSettles: posting a pending transaction moves the
+// earmarked amounts from pending to posted exactly and stamps posted_at.
+func TestPostPendingSettles(t *testing.T) {
+	env := setup(t)
+	fx := newPostingFixture(t, env)
+
+	if _, err := post(t, env, "fund", "",
+		entry(fx.system.GetId(), "-100.00"),
+		entry(fx.user.GetId(), "100.00"),
+	); err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+	pending, err := createPending(t, env, "hold-2", "",
+		entry(fx.user.GetId(), "-40.00"),
+		entry(fx.system.GetId(), "40.00"),
+	)
+	if err != nil {
+		t.Fatalf("CreatePendingTransaction: %v", err)
+	}
+
+	settled, err := postPending(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("PostTransaction: %v", err)
+	}
+	if settled.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED {
+		t.Fatalf("status = %v, want POSTED", settled.GetStatus())
+	}
+	if settled.GetPostedAt() == nil {
+		t.Fatal("settled transaction missing posted_at")
+	}
+	if settled.GetVoidedAt() != nil {
+		t.Fatal("settled transaction must not carry voided_at")
+	}
+
+	assertBalances(t, env, fx, fx.user.GetId(), "60.00", "0", "60.00")
+	assertBalances(t, env, fx, fx.system.GetId(), "-60.00", "0", "-60.00")
+
+	got, err := getTransaction(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("GetTransaction: %v", err)
+	}
+	if got.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED || got.GetPostedAt() == nil {
+		t.Fatalf("GetTransaction did not reflect settle: %v", got)
+	}
+}
+
+// TestVoidPendingReleases: voiding a pending transaction removes the
+// earmark with no posted movement and stamps voided_at.
+func TestVoidPendingReleases(t *testing.T) {
+	env := setup(t)
+	fx := newPostingFixture(t, env)
+
+	if _, err := post(t, env, "fund", "",
+		entry(fx.system.GetId(), "-100.00"),
+		entry(fx.user.GetId(), "100.00"),
+	); err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+	pending, err := createPending(t, env, "hold-3", "",
+		entry(fx.user.GetId(), "-25.00"),
+		entry(fx.system.GetId(), "25.00"),
+	)
+	if err != nil {
+		t.Fatalf("CreatePendingTransaction: %v", err)
+	}
+
+	voided, err := voidPending(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("VoidTransaction: %v", err)
+	}
+	if voided.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED {
+		t.Fatalf("status = %v, want VOIDED", voided.GetStatus())
+	}
+	if voided.GetVoidedAt() == nil {
+		t.Fatal("voided transaction missing voided_at")
+	}
+	if voided.GetPostedAt() != nil {
+		t.Fatal("voided transaction must not carry posted_at")
+	}
+
+	// Posted never moved; the earmark is gone, so available is restored.
+	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "0", "100.00")
+	assertBalances(t, env, fx, fx.system.GetId(), "-100.00", "0", "-100.00")
+}
+
+// TestPendingOverdrawAvailableRejected: a pending creation that would
+// drive available balance negative is rejected even when the posted
+// balance alone would cover the movement. The rejected key is not
+// consumed: a corrected retry with the same key succeeds.
+func TestPendingOverdrawAvailableRejected(t *testing.T) {
+	env := setup(t)
+	fx := newPostingFixture(t, env)
+
+	if _, err := post(t, env, "fund", "",
+		entry(fx.system.GetId(), "-100.00"),
+		entry(fx.user.GetId(), "100.00"),
+	); err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+
+	// Earmark most of the balance: available is now 40.
+	if _, err := createPending(t, env, "hold-part", "",
+		entry(fx.user.GetId(), "-60.00"),
+		entry(fx.system.GetId(), "60.00"),
+	); err != nil {
+		t.Fatalf("partial hold: %v", err)
+	}
+
+	// Posted alone (100) would allow a 50.00 movement; available (40) does
+	// not.
+	_, err := createPending(t, env, "hold-over", "",
+		entry(fx.user.GetId(), "-50.00"),
+		entry(fx.system.GetId(), "50.00"),
+	)
+	assertCode(t, err, connect.CodeFailedPrecondition)
+	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "-60.00", "40.00")
+
+	// The rejected key was not consumed: a smaller retry succeeds.
+	if _, err := createPending(t, env, "hold-over", "",
+		entry(fx.user.GetId(), "-40.00"),
+		entry(fx.system.GetId(), "40.00"),
+	); err != nil {
+		t.Fatalf("corrected retry on rejected key: %v", err)
+	}
+	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "-100.00", "0")
+
+	// A hold that exceeds the posted balance outright is rejected too.
+	_, err = createPending(t, env, "hold-too-big", "",
+		entry(fx.user.GetId(), "-200.00"),
+		entry(fx.system.GetId(), "200.00"),
+	)
+	assertCode(t, err, connect.CodeFailedPrecondition)
+	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "-100.00", "0")
+}
+
+// TestTerminalStatesFinal: posting or voiding an already-posted or
+// voided transaction is rejected with failed_precondition and moves
+// nothing — retries after a timeout are safe.
+func TestTerminalStatesFinal(t *testing.T) {
+	env := setup(t)
+	fx := newPostingFixture(t, env)
+
+	if _, err := post(t, env, "fund", "",
+		entry(fx.system.GetId(), "-100.00"),
+		entry(fx.user.GetId(), "100.00"),
+	); err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+
+	// Settle path: post, then every further transition is rejected.
+	pending, err := createPending(t, env, "hold-a", "",
+		entry(fx.user.GetId(), "-30.00"),
+		entry(fx.system.GetId(), "30.00"),
+	)
+	if err != nil {
+		t.Fatalf("CreatePendingTransaction: %v", err)
+	}
+	settled, err := postPending(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("PostTransaction: %v", err)
+	}
+
+	if _, err := postPending(t, env, pending.GetId()); err == nil {
+		t.Fatal("re-posting a posted transaction: expected error")
+	} else {
+		assertCode(t, err, connect.CodeFailedPrecondition)
+	}
+	if _, err := voidPending(t, env, pending.GetId()); err == nil {
+		t.Fatal("voiding a posted transaction: expected error")
+	} else {
+		assertCode(t, err, connect.CodeFailedPrecondition)
+	}
+
+	got, err := getTransaction(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("GetTransaction: %v", err)
+	}
+	if got.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED {
+		t.Fatalf("status after rejected transitions = %v, want POSTED", got.GetStatus())
+	}
+	if !got.GetPostedAt().AsTime().Equal(settled.GetPostedAt().AsTime()) {
+		t.Fatal("posted_at changed after rejected re-post")
+	}
+	assertBalances(t, env, fx, fx.user.GetId(), "70.00", "0", "70.00")
+
+	// Void path: void, then every further transition is rejected.
+	released, err := createPending(t, env, "hold-b", "",
+		entry(fx.user.GetId(), "-20.00"),
+		entry(fx.system.GetId(), "20.00"),
+	)
+	if err != nil {
+		t.Fatalf("CreatePendingTransaction: %v", err)
+	}
+	voided, err := voidPending(t, env, released.GetId())
+	if err != nil {
+		t.Fatalf("VoidTransaction: %v", err)
+	}
+
+	if _, err := voidPending(t, env, released.GetId()); err == nil {
+		t.Fatal("re-voiding a voided transaction: expected error")
+	} else {
+		assertCode(t, err, connect.CodeFailedPrecondition)
+	}
+	if _, err := postPending(t, env, released.GetId()); err == nil {
+		t.Fatal("posting a voided transaction: expected error")
+	} else {
+		assertCode(t, err, connect.CodeFailedPrecondition)
+	}
+
+	got, err = getTransaction(t, env, released.GetId())
+	if err != nil {
+		t.Fatalf("GetTransaction: %v", err)
+	}
+	if got.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED {
+		t.Fatalf("status after rejected transitions = %v, want VOIDED", got.GetStatus())
+	}
+	if !got.GetVoidedAt().AsTime().Equal(voided.GetVoidedAt().AsTime()) {
+		t.Fatal("voided_at changed after rejected re-void")
+	}
+	assertBalances(t, env, fx, fx.user.GetId(), "70.00", "0", "70.00")
+	assertBalances(t, env, fx, fx.system.GetId(), "-70.00", "0", "-70.00")
+
+	// Unknown transactions are not_found on both transitions.
+	if _, err := postPending(t, env, "018f4d9a-7b6c-7000-8000-000000000000"); err == nil {
+		t.Fatal("posting an unknown transaction: expected error")
+	} else {
+		assertCode(t, err, connect.CodeNotFound)
+	}
+	if _, err := voidPending(t, env, "018f4d9a-7b6c-7000-8000-000000000000"); err == nil {
+		t.Fatal("voiding an unknown transaction: expected error")
+	} else {
+		assertCode(t, err, connect.CodeNotFound)
+	}
+}
+
+// TestIdempotentReplayPendingCreate: retrying a pending creation with the
+// same idempotency key returns the original transaction and earmarks
+// nothing twice.
+func TestIdempotentReplayPendingCreate(t *testing.T) {
+	env := setup(t)
+	fx := newPostingFixture(t, env)
+
+	if _, err := post(t, env, "fund", "",
+		entry(fx.system.GetId(), "-100.00"),
+		entry(fx.user.GetId(), "100.00"),
+	); err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+
+	original, err := createPending(t, env, "idem-p", "auth-replay",
+		entry(fx.user.GetId(), "-20.00"),
+		entry(fx.system.GetId(), "20.00"),
+	)
+	if err != nil {
+		t.Fatalf("first pending create: %v", err)
+	}
+
+	replay, err := createPending(t, env, "idem-p", "auth-replay",
+		entry(fx.user.GetId(), "-20.00"),
+		entry(fx.system.GetId(), "20.00"),
+	)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if replay.GetId() != original.GetId() {
+		t.Fatalf("replay returned id %s, want original %s", replay.GetId(), original.GetId())
+	}
+	if replay.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING {
+		t.Fatalf("replay status = %v, want PENDING", replay.GetStatus())
+	}
+	if len(replay.GetEntries()) != 2 {
+		t.Fatalf("replay entries = %d, want 2", len(replay.GetEntries()))
+	}
+
+	// A single earmark, not two.
+	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "-20.00", "80.00")
+	assertBalances(t, env, fx, fx.system.GetId(), "-100.00", "20.00", "-80.00")
+
+	// The replayed hold still settles exactly once.
+	if _, err := postPending(t, env, original.GetId()); err != nil {
+		t.Fatalf("post after replay: %v", err)
+	}
+	assertBalances(t, env, fx, fx.user.GetId(), "80.00", "0", "80.00")
 }

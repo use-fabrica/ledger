@@ -90,3 +90,72 @@ func (q *Queries) GetTransactionByIdempotencyKey(ctx context.Context, idempotenc
 	)
 	return i, err
 }
+
+const lockTransaction = `-- name: LockTransaction :one
+SELECT id, idempotency_key, reference, status, metadata, created_at, posted_at, voided_at
+FROM transactions
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockTransaction(ctx context.Context, id pgtype.UUID) (Transaction, error) {
+	row := q.db.QueryRow(ctx, lockTransaction, id)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.Reference,
+		&i.Status,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.PostedAt,
+		&i.VoidedAt,
+	)
+	return i, err
+}
+
+const markTransactionPosted = `-- name: MarkTransactionPosted :one
+UPDATE transactions
+SET status = 'posted', posted_at = now()
+WHERE id = $1
+RETURNING id, idempotency_key, reference, status, metadata, created_at, posted_at, voided_at
+`
+
+func (q *Queries) MarkTransactionPosted(ctx context.Context, id pgtype.UUID) (Transaction, error) {
+	row := q.db.QueryRow(ctx, markTransactionPosted, id)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.Reference,
+		&i.Status,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.PostedAt,
+		&i.VoidedAt,
+	)
+	return i, err
+}
+
+const markTransactionVoided = `-- name: MarkTransactionVoided :one
+UPDATE transactions
+SET status = 'voided', voided_at = now()
+WHERE id = $1
+RETURNING id, idempotency_key, reference, status, metadata, created_at, posted_at, voided_at
+`
+
+func (q *Queries) MarkTransactionVoided(ctx context.Context, id pgtype.UUID) (Transaction, error) {
+	row := q.db.QueryRow(ctx, markTransactionVoided, id)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.Reference,
+		&i.Status,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.PostedAt,
+		&i.VoidedAt,
+	)
+	return i, err
+}

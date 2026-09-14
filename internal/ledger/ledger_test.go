@@ -67,6 +67,48 @@ func TestValidateZeroSum(t *testing.T) {
 	}
 }
 
+func TestNetDeltas(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []PostEntry
+		want    map[string]decimal.Decimal
+	}{
+		{
+			name:    "single entry per account",
+			entries: []PostEntry{{AccountID: "a", Amount: dec(t, "-100.00")}, {AccountID: "b", Amount: dec(t, "100.00")}},
+			want:    map[string]decimal.Decimal{"a": dec(t, "-100.00"), "b": dec(t, "100.00")},
+		},
+		{
+			name: "split entries collapse into one net delta",
+			entries: []PostEntry{
+				{AccountID: "a", Amount: dec(t, "-30.00")},
+				{AccountID: "a", Amount: dec(t, "-70.00")},
+				{AccountID: "b", Amount: dec(t, "100.00")},
+			},
+			want: map[string]decimal.Decimal{"a": dec(t, "-100.00"), "b": dec(t, "100.00")},
+		},
+		{
+			name:    "nets may cancel to zero per account",
+			entries: []PostEntry{{AccountID: "a", Amount: dec(t, "5")}, {AccountID: "a", Amount: dec(t, "-5")}},
+			want:    map[string]decimal.Decimal{"a": dec(t, "0")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := netDeltas(tt.entries)
+			if len(got) != len(tt.want) {
+				t.Fatalf("netDeltas() = %v, want %v", got, tt.want)
+			}
+			for accountID, want := range tt.want {
+				d, ok := got[accountID]
+				if !ok || !d.Equal(want) {
+					t.Fatalf("netDeltas()[%s] = %v, want %s (all: %v)", accountID, d, want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestPrecisionExceeded(t *testing.T) {
 	tests := []struct {
 		amount    string

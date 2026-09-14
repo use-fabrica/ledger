@@ -87,6 +87,41 @@ func (q *Queries) LockBalance(ctx context.Context, accountID string) (Balance, e
 	return i, err
 }
 
+const moveBalancePendingToPosted = `-- name: MoveBalancePendingToPosted :exec
+UPDATE balances
+SET posted = posted + $2, pending = pending - $2, updated_at = now()
+WHERE account_id = $1
+`
+
+type MoveBalancePendingToPostedParams struct {
+	AccountID string
+	Posted    decimal.Decimal
+}
+
+// Settles an earmark: the pending movement is moved onto the posted
+// column (pending holds net earmarked amounts, so settling subtracts the
+// same delta that created the earmark).
+func (q *Queries) MoveBalancePendingToPosted(ctx context.Context, arg MoveBalancePendingToPostedParams) error {
+	_, err := q.db.Exec(ctx, moveBalancePendingToPosted, arg.AccountID, arg.Posted)
+	return err
+}
+
+const updateBalancePending = `-- name: UpdateBalancePending :exec
+UPDATE balances
+SET pending = pending + $2, updated_at = now()
+WHERE account_id = $1
+`
+
+type UpdateBalancePendingParams struct {
+	AccountID string
+	Pending   decimal.Decimal
+}
+
+func (q *Queries) UpdateBalancePending(ctx context.Context, arg UpdateBalancePendingParams) error {
+	_, err := q.db.Exec(ctx, updateBalancePending, arg.AccountID, arg.Pending)
+	return err
+}
+
 const updateBalancePosted = `-- name: UpdateBalancePosted :exec
 UPDATE balances
 SET posted = posted + $2, updated_at = now()

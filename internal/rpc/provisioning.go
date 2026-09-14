@@ -193,6 +193,9 @@ func (h *ProvisioningHandler) GetWalletBalances(
 			}),
 			Posted:  row.Posted.String(),
 			Pending: row.Pending.String(),
+			// Available is posted plus pending (net earmarked amounts,
+			// negative for outgoing) — the spendable total per ADR 0006.
+			Available: row.Posted.Add(row.Pending).String(),
 		})
 	}
 	return connect.NewResponse(&ledgerv1.GetWalletBalancesResponse{

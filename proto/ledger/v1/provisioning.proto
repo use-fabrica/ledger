@@ -98,11 +98,15 @@ message GetWalletBalancesRequest {
 
 // AccountBalance is one account of the wallet with its materialized
 // balances. Amounts are decimal strings (e.g. "1234.56") in the account's
-// asset precision, matching shopspring/decimal serialization.
+// asset precision, matching shopspring/decimal serialization. pending
+// holds net earmarked amounts with the same sign as the holds' entries
+// (negative for outgoing), so available = posted + pending is what the
+// account can still spend.
 message AccountBalance {
   Account account = 1;
   string posted = 2;
   string pending = 3;
+  string available = 4;
 }
 
 message GetWalletBalancesResponse {
