@@ -1,6 +1,8 @@
 // Package rpc hosts the Connect handlers for the ledger API surface.
-// Handlers depend on the posting engine in internal/ledger, never on
-// internal/store directly.
+// Handlers go through the posting engine in internal/ledger for anything
+// that touches the balances table; provisioning entities (assets, holders,
+// wallets) and reads may use internal/store directly. Auth is applied as
+// Connect interceptors — a pure middleware seam — never inside handlers.
 package rpc
 
 import (

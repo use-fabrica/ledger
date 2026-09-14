@@ -15,6 +15,10 @@ type Config struct {
 	DatabaseURL string
 	// HTTPAddr is the listen address for the Connect HTTP server.
 	HTTPAddr string
+	// APIKey gates every RPC except the health probes. It is deliberately a
+	// middleware concern so mTLS (or any other transport identity) can
+	// replace it without touching handlers.
+	APIKey string
 }
 
 // Load reads configuration from the environment, applying defaults where
@@ -23,12 +27,16 @@ func Load() (Config, error) {
 	cfg := Config{
 		DatabaseURL: os.Getenv("LEDGER_DATABASE_URL"),
 		HTTPAddr:    os.Getenv("LEDGER_HTTP_ADDR"),
+		APIKey:      os.Getenv("LEDGER_API_KEY"),
 	}
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = ":8080"
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: LEDGER_DATABASE_URL is required")
+	}
+	if cfg.APIKey == "" {
+		return Config{}, fmt.Errorf("config: LEDGER_API_KEY is required")
 	}
 	return cfg, nil
 }
