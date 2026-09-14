@@ -241,6 +241,175 @@ func (x *GetTransactionRequest) GetId() string {
 	return ""
 }
 
+// CreatePendingTransactionRequest earmarks funds instead of settling them:
+// same shape and validation as CreateTransactionRequest, but the balance
+// movement lands on the pending column and the transaction starts in
+// status PENDING. A creation that would overdraw the available balance
+// (posted + pending) of an account that is not allow_negative is
+// rejected, even when the posted balance alone would allow it.
+type CreatePendingTransactionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required: deduplicates retries. Replaying a key returns the original
+	// pending transaction with no additional earmark.
+	IdempotencyKey string `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	// Optional nullable provider reference (e.g. a Stripe charge ID) used
+	// for webhook deduplication and reconciliation.
+	Reference *string `protobuf:"bytes,2,opt,name=reference,proto3,oneof" json:"reference,omitempty"`
+	// At least two entries; their signed amounts must net to zero per
+	// asset, no amount may be zero, and no amount may carry more
+	// fractional digits than its asset's precision.
+	Entries       []*TransactionInputEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePendingTransactionRequest) Reset() {
+	*x = CreatePendingTransactionRequest{}
+	mi := &file_ledger_v1_posting_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePendingTransactionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePendingTransactionRequest) ProtoMessage() {}
+
+func (x *CreatePendingTransactionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ledger_v1_posting_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePendingTransactionRequest.ProtoReflect.Descriptor instead.
+func (*CreatePendingTransactionRequest) Descriptor() ([]byte, []int) {
+	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreatePendingTransactionRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *CreatePendingTransactionRequest) GetReference() string {
+	if x != nil && x.Reference != nil {
+		return *x.Reference
+	}
+	return ""
+}
+
+func (x *CreatePendingTransactionRequest) GetEntries() []*TransactionInputEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+// PostTransactionRequest settles a pending transaction: the earmarked
+// amounts move from pending to posted and the transaction becomes
+// terminal. Posting a transaction that is already posted or voided is
+// rejected (failed_precondition) — terminal states are final.
+type PostTransactionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PostTransactionRequest) Reset() {
+	*x = PostTransactionRequest{}
+	mi := &file_ledger_v1_posting_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostTransactionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostTransactionRequest) ProtoMessage() {}
+
+func (x *PostTransactionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ledger_v1_posting_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostTransactionRequest.ProtoReflect.Descriptor instead.
+func (*PostTransactionRequest) Descriptor() ([]byte, []int) {
+	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PostTransactionRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// VoidTransactionRequest releases a pending transaction's earmark with no
+// posted movement and the transaction becomes terminal. Voiding a
+// transaction that is already posted or voided is rejected
+// (failed_precondition) — terminal states are final.
+type VoidTransactionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VoidTransactionRequest) Reset() {
+	*x = VoidTransactionRequest{}
+	mi := &file_ledger_v1_posting_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VoidTransactionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VoidTransactionRequest) ProtoMessage() {}
+
+func (x *VoidTransactionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ledger_v1_posting_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VoidTransactionRequest.ProtoReflect.Descriptor instead.
+func (*VoidTransactionRequest) Descriptor() ([]byte, []int) {
+	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *VoidTransactionRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
 type Transaction struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -249,14 +418,19 @@ type Transaction struct {
 	Status         TransactionStatus      `protobuf:"varint,4,opt,name=status,proto3,enum=ledger.v1.TransactionStatus" json:"status,omitempty"`
 	Entries        []*Entry               `protobuf:"bytes,5,rep,name=entries,proto3" json:"entries,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	PostedAt       *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=posted_at,json=postedAt,proto3" json:"posted_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// posted_at is set when a pending transaction settles (or at creation
+	// for directly-posted transactions); it stays unset on voided ones.
+	PostedAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=posted_at,json=postedAt,proto3" json:"posted_at,omitempty"`
+	// voided_at is set when a pending transaction is voided; unset
+	// otherwise.
+	VoidedAt      *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=voided_at,json=voidedAt,proto3" json:"voided_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Transaction) Reset() {
 	*x = Transaction{}
-	mi := &file_ledger_v1_posting_proto_msgTypes[3]
+	mi := &file_ledger_v1_posting_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -268,7 +442,7 @@ func (x *Transaction) String() string {
 func (*Transaction) ProtoMessage() {}
 
 func (x *Transaction) ProtoReflect() protoreflect.Message {
-	mi := &file_ledger_v1_posting_proto_msgTypes[3]
+	mi := &file_ledger_v1_posting_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -281,7 +455,7 @@ func (x *Transaction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Transaction.ProtoReflect.Descriptor instead.
 func (*Transaction) Descriptor() ([]byte, []int) {
-	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{3}
+	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Transaction) GetId() string {
@@ -333,6 +507,13 @@ func (x *Transaction) GetPostedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Transaction) GetVoidedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.VoidedAt
+	}
+	return nil
+}
+
 // Entry is one immutable, signed amount applied to one account as part of
 // a transaction. Amount is a signed decimal string.
 type Entry struct {
@@ -348,7 +529,7 @@ type Entry struct {
 
 func (x *Entry) Reset() {
 	*x = Entry{}
-	mi := &file_ledger_v1_posting_proto_msgTypes[4]
+	mi := &file_ledger_v1_posting_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -360,7 +541,7 @@ func (x *Entry) String() string {
 func (*Entry) ProtoMessage() {}
 
 func (x *Entry) ProtoReflect() protoreflect.Message {
-	mi := &file_ledger_v1_posting_proto_msgTypes[4]
+	mi := &file_ledger_v1_posting_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -373,7 +554,7 @@ func (x *Entry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Entry.ProtoReflect.Descriptor instead.
 func (*Entry) Descriptor() ([]byte, []int) {
-	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{4}
+	return file_ledger_v1_posting_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Entry) GetId() string {
@@ -427,7 +608,17 @@ const file_ledger_v1_posting_proto_rawDesc = "" +
 	"\n" +
 	"_reference\"'\n" +
 	"\x15GetTransactionRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xcd\x02\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xb7\x01\n" +
+	"\x1fCreatePendingTransactionRequest\x12'\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12!\n" +
+	"\treference\x18\x02 \x01(\tH\x00R\treference\x88\x01\x01\x12:\n" +
+	"\aentries\x18\x03 \x03(\v2 .ledger.v1.TransactionInputEntryR\aentriesB\f\n" +
+	"\n" +
+	"_reference\"(\n" +
+	"\x16PostTransactionRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"(\n" +
+	"\x16VoidTransactionRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x86\x03\n" +
 	"\vTransaction\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12!\n" +
@@ -436,7 +627,8 @@ const file_ledger_v1_posting_proto_rawDesc = "" +
 	"\aentries\x18\x05 \x03(\v2\x10.ledger.v1.EntryR\aentries\x129\n" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x127\n" +
-	"\tposted_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bpostedAtB\f\n" +
+	"\tposted_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\bpostedAt\x127\n" +
+	"\tvoided_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\bvoidedAtB\f\n" +
 	"\n" +
 	"_reference\"\xb0\x01\n" +
 	"\x05Entry\x12\x0e\n" +
@@ -451,9 +643,12 @@ const file_ledger_v1_posting_proto_rawDesc = "" +
 	"\x1eTRANSACTION_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aTRANSACTION_STATUS_PENDING\x10\x01\x12\x1d\n" +
 	"\x19TRANSACTION_STATUS_POSTED\x10\x02\x12\x1d\n" +
-	"\x19TRANSACTION_STATUS_VOIDED\x10\x032\xae\x01\n" +
+	"\x19TRANSACTION_STATUS_VOIDED\x10\x032\xaa\x03\n" +
 	"\x0ePostingService\x12P\n" +
-	"\x11CreateTransaction\x12#.ledger.v1.CreateTransactionRequest\x1a\x16.ledger.v1.Transaction\x12J\n" +
+	"\x11CreateTransaction\x12#.ledger.v1.CreateTransactionRequest\x1a\x16.ledger.v1.Transaction\x12^\n" +
+	"\x18CreatePendingTransaction\x12*.ledger.v1.CreatePendingTransactionRequest\x1a\x16.ledger.v1.Transaction\x12L\n" +
+	"\x0fPostTransaction\x12!.ledger.v1.PostTransactionRequest\x1a\x16.ledger.v1.Transaction\x12L\n" +
+	"\x0fVoidTransaction\x12!.ledger.v1.VoidTransactionRequest\x1a\x16.ledger.v1.Transaction\x12J\n" +
 	"\x0eGetTransaction\x12 .ledger.v1.GetTransactionRequest\x1a\x16.ledger.v1.TransactionB\x9a\x01\n" +
 	"\rcom.ledger.v1B\fPostingProtoP\x01Z6github.com/use-fabrica/ledger/proto/ledger/v1;ledgerv1\xa2\x02\x03LXX\xaa\x02\tLedger.V1\xca\x02\tLedger\\V1\xe2\x02\x15Ledger\\V1\\GPBMetadata\xea\x02\n" +
 	"Ledger::V1b\x06proto3"
@@ -471,32 +666,43 @@ func file_ledger_v1_posting_proto_rawDescGZIP() []byte {
 }
 
 var file_ledger_v1_posting_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ledger_v1_posting_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_ledger_v1_posting_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_ledger_v1_posting_proto_goTypes = []any{
-	(TransactionStatus)(0),           // 0: ledger.v1.TransactionStatus
-	(*TransactionInputEntry)(nil),    // 1: ledger.v1.TransactionInputEntry
-	(*CreateTransactionRequest)(nil), // 2: ledger.v1.CreateTransactionRequest
-	(*GetTransactionRequest)(nil),    // 3: ledger.v1.GetTransactionRequest
-	(*Transaction)(nil),              // 4: ledger.v1.Transaction
-	(*Entry)(nil),                    // 5: ledger.v1.Entry
-	(*timestamppb.Timestamp)(nil),    // 6: google.protobuf.Timestamp
+	(TransactionStatus)(0),                  // 0: ledger.v1.TransactionStatus
+	(*TransactionInputEntry)(nil),           // 1: ledger.v1.TransactionInputEntry
+	(*CreateTransactionRequest)(nil),        // 2: ledger.v1.CreateTransactionRequest
+	(*GetTransactionRequest)(nil),           // 3: ledger.v1.GetTransactionRequest
+	(*CreatePendingTransactionRequest)(nil), // 4: ledger.v1.CreatePendingTransactionRequest
+	(*PostTransactionRequest)(nil),          // 5: ledger.v1.PostTransactionRequest
+	(*VoidTransactionRequest)(nil),          // 6: ledger.v1.VoidTransactionRequest
+	(*Transaction)(nil),                     // 7: ledger.v1.Transaction
+	(*Entry)(nil),                           // 8: ledger.v1.Entry
+	(*timestamppb.Timestamp)(nil),           // 9: google.protobuf.Timestamp
 }
 var file_ledger_v1_posting_proto_depIdxs = []int32{
-	1, // 0: ledger.v1.CreateTransactionRequest.entries:type_name -> ledger.v1.TransactionInputEntry
-	0, // 1: ledger.v1.Transaction.status:type_name -> ledger.v1.TransactionStatus
-	5, // 2: ledger.v1.Transaction.entries:type_name -> ledger.v1.Entry
-	6, // 3: ledger.v1.Transaction.created_at:type_name -> google.protobuf.Timestamp
-	6, // 4: ledger.v1.Transaction.posted_at:type_name -> google.protobuf.Timestamp
-	6, // 5: ledger.v1.Entry.created_at:type_name -> google.protobuf.Timestamp
-	2, // 6: ledger.v1.PostingService.CreateTransaction:input_type -> ledger.v1.CreateTransactionRequest
-	3, // 7: ledger.v1.PostingService.GetTransaction:input_type -> ledger.v1.GetTransactionRequest
-	4, // 8: ledger.v1.PostingService.CreateTransaction:output_type -> ledger.v1.Transaction
-	4, // 9: ledger.v1.PostingService.GetTransaction:output_type -> ledger.v1.Transaction
-	8, // [8:10] is the sub-list for method output_type
-	6, // [6:8] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	1,  // 0: ledger.v1.CreateTransactionRequest.entries:type_name -> ledger.v1.TransactionInputEntry
+	1,  // 1: ledger.v1.CreatePendingTransactionRequest.entries:type_name -> ledger.v1.TransactionInputEntry
+	0,  // 2: ledger.v1.Transaction.status:type_name -> ledger.v1.TransactionStatus
+	8,  // 3: ledger.v1.Transaction.entries:type_name -> ledger.v1.Entry
+	9,  // 4: ledger.v1.Transaction.created_at:type_name -> google.protobuf.Timestamp
+	9,  // 5: ledger.v1.Transaction.posted_at:type_name -> google.protobuf.Timestamp
+	9,  // 6: ledger.v1.Transaction.voided_at:type_name -> google.protobuf.Timestamp
+	9,  // 7: ledger.v1.Entry.created_at:type_name -> google.protobuf.Timestamp
+	2,  // 8: ledger.v1.PostingService.CreateTransaction:input_type -> ledger.v1.CreateTransactionRequest
+	4,  // 9: ledger.v1.PostingService.CreatePendingTransaction:input_type -> ledger.v1.CreatePendingTransactionRequest
+	5,  // 10: ledger.v1.PostingService.PostTransaction:input_type -> ledger.v1.PostTransactionRequest
+	6,  // 11: ledger.v1.PostingService.VoidTransaction:input_type -> ledger.v1.VoidTransactionRequest
+	3,  // 12: ledger.v1.PostingService.GetTransaction:input_type -> ledger.v1.GetTransactionRequest
+	7,  // 13: ledger.v1.PostingService.CreateTransaction:output_type -> ledger.v1.Transaction
+	7,  // 14: ledger.v1.PostingService.CreatePendingTransaction:output_type -> ledger.v1.Transaction
+	7,  // 15: ledger.v1.PostingService.PostTransaction:output_type -> ledger.v1.Transaction
+	7,  // 16: ledger.v1.PostingService.VoidTransaction:output_type -> ledger.v1.Transaction
+	7,  // 17: ledger.v1.PostingService.GetTransaction:output_type -> ledger.v1.Transaction
+	13, // [13:18] is the sub-list for method output_type
+	8,  // [8:13] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_ledger_v1_posting_proto_init() }
@@ -506,13 +712,14 @@ func file_ledger_v1_posting_proto_init() {
 	}
 	file_ledger_v1_posting_proto_msgTypes[1].OneofWrappers = []any{}
 	file_ledger_v1_posting_proto_msgTypes[3].OneofWrappers = []any{}
+	file_ledger_v1_posting_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ledger_v1_posting_proto_rawDesc), len(file_ledger_v1_posting_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

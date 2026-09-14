@@ -19,3 +19,16 @@ FOR UPDATE;
 UPDATE balances
 SET posted = posted + $2, updated_at = now()
 WHERE account_id = $1;
+
+-- name: UpdateBalancePending :exec
+UPDATE balances
+SET pending = pending + $2, updated_at = now()
+WHERE account_id = $1;
+
+-- name: MoveBalancePendingToPosted :exec
+-- Settles an earmark: the pending movement is moved onto the posted
+-- column (pending holds net earmarked amounts, so settling subtracts the
+-- same delta that created the earmark).
+UPDATE balances
+SET posted = posted + $2, pending = pending - $2, updated_at = now()
+WHERE account_id = $1;

@@ -36,6 +36,15 @@ const (
 	// PostingServiceCreateTransactionProcedure is the fully-qualified name of the PostingService's
 	// CreateTransaction RPC.
 	PostingServiceCreateTransactionProcedure = "/ledger.v1.PostingService/CreateTransaction"
+	// PostingServiceCreatePendingTransactionProcedure is the fully-qualified name of the
+	// PostingService's CreatePendingTransaction RPC.
+	PostingServiceCreatePendingTransactionProcedure = "/ledger.v1.PostingService/CreatePendingTransaction"
+	// PostingServicePostTransactionProcedure is the fully-qualified name of the PostingService's
+	// PostTransaction RPC.
+	PostingServicePostTransactionProcedure = "/ledger.v1.PostingService/PostTransaction"
+	// PostingServiceVoidTransactionProcedure is the fully-qualified name of the PostingService's
+	// VoidTransaction RPC.
+	PostingServiceVoidTransactionProcedure = "/ledger.v1.PostingService/VoidTransaction"
 	// PostingServiceGetTransactionProcedure is the fully-qualified name of the PostingService's
 	// GetTransaction RPC.
 	PostingServiceGetTransactionProcedure = "/ledger.v1.PostingService/GetTransaction"
@@ -44,6 +53,9 @@ const (
 // PostingServiceClient is a client for the ledger.v1.PostingService service.
 type PostingServiceClient interface {
 	CreateTransaction(context.Context, *connect.Request[v1.CreateTransactionRequest]) (*connect.Response[v1.Transaction], error)
+	CreatePendingTransaction(context.Context, *connect.Request[v1.CreatePendingTransactionRequest]) (*connect.Response[v1.Transaction], error)
+	PostTransaction(context.Context, *connect.Request[v1.PostTransactionRequest]) (*connect.Response[v1.Transaction], error)
+	VoidTransaction(context.Context, *connect.Request[v1.VoidTransactionRequest]) (*connect.Response[v1.Transaction], error)
 	GetTransaction(context.Context, *connect.Request[v1.GetTransactionRequest]) (*connect.Response[v1.Transaction], error)
 }
 
@@ -64,6 +76,24 @@ func NewPostingServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(postingServiceMethods.ByName("CreateTransaction")),
 			connect.WithClientOptions(opts...),
 		),
+		createPendingTransaction: connect.NewClient[v1.CreatePendingTransactionRequest, v1.Transaction](
+			httpClient,
+			baseURL+PostingServiceCreatePendingTransactionProcedure,
+			connect.WithSchema(postingServiceMethods.ByName("CreatePendingTransaction")),
+			connect.WithClientOptions(opts...),
+		),
+		postTransaction: connect.NewClient[v1.PostTransactionRequest, v1.Transaction](
+			httpClient,
+			baseURL+PostingServicePostTransactionProcedure,
+			connect.WithSchema(postingServiceMethods.ByName("PostTransaction")),
+			connect.WithClientOptions(opts...),
+		),
+		voidTransaction: connect.NewClient[v1.VoidTransactionRequest, v1.Transaction](
+			httpClient,
+			baseURL+PostingServiceVoidTransactionProcedure,
+			connect.WithSchema(postingServiceMethods.ByName("VoidTransaction")),
+			connect.WithClientOptions(opts...),
+		),
 		getTransaction: connect.NewClient[v1.GetTransactionRequest, v1.Transaction](
 			httpClient,
 			baseURL+PostingServiceGetTransactionProcedure,
@@ -75,13 +105,31 @@ func NewPostingServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // postingServiceClient implements PostingServiceClient.
 type postingServiceClient struct {
-	createTransaction *connect.Client[v1.CreateTransactionRequest, v1.Transaction]
-	getTransaction    *connect.Client[v1.GetTransactionRequest, v1.Transaction]
+	createTransaction        *connect.Client[v1.CreateTransactionRequest, v1.Transaction]
+	createPendingTransaction *connect.Client[v1.CreatePendingTransactionRequest, v1.Transaction]
+	postTransaction          *connect.Client[v1.PostTransactionRequest, v1.Transaction]
+	voidTransaction          *connect.Client[v1.VoidTransactionRequest, v1.Transaction]
+	getTransaction           *connect.Client[v1.GetTransactionRequest, v1.Transaction]
 }
 
 // CreateTransaction calls ledger.v1.PostingService.CreateTransaction.
 func (c *postingServiceClient) CreateTransaction(ctx context.Context, req *connect.Request[v1.CreateTransactionRequest]) (*connect.Response[v1.Transaction], error) {
 	return c.createTransaction.CallUnary(ctx, req)
+}
+
+// CreatePendingTransaction calls ledger.v1.PostingService.CreatePendingTransaction.
+func (c *postingServiceClient) CreatePendingTransaction(ctx context.Context, req *connect.Request[v1.CreatePendingTransactionRequest]) (*connect.Response[v1.Transaction], error) {
+	return c.createPendingTransaction.CallUnary(ctx, req)
+}
+
+// PostTransaction calls ledger.v1.PostingService.PostTransaction.
+func (c *postingServiceClient) PostTransaction(ctx context.Context, req *connect.Request[v1.PostTransactionRequest]) (*connect.Response[v1.Transaction], error) {
+	return c.postTransaction.CallUnary(ctx, req)
+}
+
+// VoidTransaction calls ledger.v1.PostingService.VoidTransaction.
+func (c *postingServiceClient) VoidTransaction(ctx context.Context, req *connect.Request[v1.VoidTransactionRequest]) (*connect.Response[v1.Transaction], error) {
+	return c.voidTransaction.CallUnary(ctx, req)
 }
 
 // GetTransaction calls ledger.v1.PostingService.GetTransaction.
@@ -92,6 +140,9 @@ func (c *postingServiceClient) GetTransaction(ctx context.Context, req *connect.
 // PostingServiceHandler is an implementation of the ledger.v1.PostingService service.
 type PostingServiceHandler interface {
 	CreateTransaction(context.Context, *connect.Request[v1.CreateTransactionRequest]) (*connect.Response[v1.Transaction], error)
+	CreatePendingTransaction(context.Context, *connect.Request[v1.CreatePendingTransactionRequest]) (*connect.Response[v1.Transaction], error)
+	PostTransaction(context.Context, *connect.Request[v1.PostTransactionRequest]) (*connect.Response[v1.Transaction], error)
+	VoidTransaction(context.Context, *connect.Request[v1.VoidTransactionRequest]) (*connect.Response[v1.Transaction], error)
 	GetTransaction(context.Context, *connect.Request[v1.GetTransactionRequest]) (*connect.Response[v1.Transaction], error)
 }
 
@@ -108,6 +159,24 @@ func NewPostingServiceHandler(svc PostingServiceHandler, opts ...connect.Handler
 		connect.WithSchema(postingServiceMethods.ByName("CreateTransaction")),
 		connect.WithHandlerOptions(opts...),
 	)
+	postingServiceCreatePendingTransactionHandler := connect.NewUnaryHandler(
+		PostingServiceCreatePendingTransactionProcedure,
+		svc.CreatePendingTransaction,
+		connect.WithSchema(postingServiceMethods.ByName("CreatePendingTransaction")),
+		connect.WithHandlerOptions(opts...),
+	)
+	postingServicePostTransactionHandler := connect.NewUnaryHandler(
+		PostingServicePostTransactionProcedure,
+		svc.PostTransaction,
+		connect.WithSchema(postingServiceMethods.ByName("PostTransaction")),
+		connect.WithHandlerOptions(opts...),
+	)
+	postingServiceVoidTransactionHandler := connect.NewUnaryHandler(
+		PostingServiceVoidTransactionProcedure,
+		svc.VoidTransaction,
+		connect.WithSchema(postingServiceMethods.ByName("VoidTransaction")),
+		connect.WithHandlerOptions(opts...),
+	)
 	postingServiceGetTransactionHandler := connect.NewUnaryHandler(
 		PostingServiceGetTransactionProcedure,
 		svc.GetTransaction,
@@ -118,6 +187,12 @@ func NewPostingServiceHandler(svc PostingServiceHandler, opts ...connect.Handler
 		switch r.URL.Path {
 		case PostingServiceCreateTransactionProcedure:
 			postingServiceCreateTransactionHandler.ServeHTTP(w, r)
+		case PostingServiceCreatePendingTransactionProcedure:
+			postingServiceCreatePendingTransactionHandler.ServeHTTP(w, r)
+		case PostingServicePostTransactionProcedure:
+			postingServicePostTransactionHandler.ServeHTTP(w, r)
+		case PostingServiceVoidTransactionProcedure:
+			postingServiceVoidTransactionHandler.ServeHTTP(w, r)
 		case PostingServiceGetTransactionProcedure:
 			postingServiceGetTransactionHandler.ServeHTTP(w, r)
 		default:
@@ -131,6 +206,18 @@ type UnimplementedPostingServiceHandler struct{}
 
 func (UnimplementedPostingServiceHandler) CreateTransaction(context.Context, *connect.Request[v1.CreateTransactionRequest]) (*connect.Response[v1.Transaction], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ledger.v1.PostingService.CreateTransaction is not implemented"))
+}
+
+func (UnimplementedPostingServiceHandler) CreatePendingTransaction(context.Context, *connect.Request[v1.CreatePendingTransactionRequest]) (*connect.Response[v1.Transaction], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ledger.v1.PostingService.CreatePendingTransaction is not implemented"))
+}
+
+func (UnimplementedPostingServiceHandler) PostTransaction(context.Context, *connect.Request[v1.PostTransactionRequest]) (*connect.Response[v1.Transaction], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ledger.v1.PostingService.PostTransaction is not implemented"))
+}
+
+func (UnimplementedPostingServiceHandler) VoidTransaction(context.Context, *connect.Request[v1.VoidTransactionRequest]) (*connect.Response[v1.Transaction], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ledger.v1.PostingService.VoidTransaction is not implemented"))
 }
 
 func (UnimplementedPostingServiceHandler) GetTransaction(context.Context, *connect.Request[v1.GetTransactionRequest]) (*connect.Response[v1.Transaction], error) {

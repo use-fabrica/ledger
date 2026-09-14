@@ -6,7 +6,14 @@
 // Posting invariants — zero net per asset, per-asset precision, overdraft
 // rules — are enforced inside one database transaction, with affected
 // balance rows locked FOR UPDATE before mutation (ticket #4). The pending
-// lifecycle (post/void of pending transactions) arrives with ticket #5.
+// lifecycle (create-pending earmarks, post settles, void releases) lives
+// in CreatePending, PostTransaction, and VoidTransaction (ticket #5).
+//
+// Sign convention for the pending balance column (ADR 0006): pending
+// holds the net earmarked amount with the same sign as the entries that
+// created it — negative for outgoing holds, positive for incoming — so
+// spendable funds are always posted + pending, and releasing an earmark
+// subtracts the same delta that created it.
 package ledger
 
 import (
@@ -64,6 +71,11 @@ var (
 	// ErrOverdraft: a resulting posted balance would go negative on an
 	// account that is not flagged allow_negative.
 	ErrOverdraft = errors.New("ledger: insufficient posted balance")
+	// ErrTransactionNotPending: post/void target a transaction that is
+	// already posted or voided. Terminal states are final — the journal
+	// is append-only, so a settled or released transaction can never
+	// move again.
+	ErrTransactionNotPending = errors.New("ledger: transaction is not pending")
 )
 
 // PostEntry is one signed amount applied to one account, as requested by
@@ -95,8 +107,27 @@ type PostedTransaction struct {
 // inserts, and the balance updates — runs in one database transaction, so
 // a rejected post writes nothing and a committed post moves balances
 // exactly once. Transactions are created directly in status 'posted';
-// the pending lifecycle is ticket #5.
+// use CreatePending to earmark funds first.
 func (e *Engine) Post(ctx context.Context, p PostParams) (PostedTransaction, error) {
+	return e.create(ctx, p, "posted")
+}
+
+// CreatePending creates a transaction in status 'pending' that earmarks
+// funds: the same validation as Post (zero-sum per asset, precision,
+// idempotent replay), but the balance movement lands on the pending
+// column only — posted balances are untouched. A pending creation that
+// would drive the available balance (posted + pending) negative on an
+// account that is not flagged allow_negative is rejected, even when the
+// posted balance alone would cover the movement.
+func (e *Engine) CreatePending(ctx context.Context, p PostParams) (PostedTransaction, error) {
+	return e.create(ctx, p, "pending")
+}
+
+// create is the shared body of Post and CreatePending: shape validation,
+// the idempotency-key replay check, and the write itself, all in one
+// database transaction. status is the initial transaction status and the
+// balance column the movement lands on.
+func (e *Engine) create(ctx context.Context, p PostParams, status string) (PostedTransaction, error) {
 	if p.IdempotencyKey == "" {
 		return PostedTransaction{}, ErrMissingIdempotencyKey
 	}
@@ -134,19 +165,24 @@ func (e *Engine) Post(ctx context.Context, p PostParams) (PostedTransaction, err
 		return PostedTransaction{}, fmt.Errorf("ledger: idempotency check: %w", err)
 	}
 
-	posted, err := e.postLocked(ctx, q, p)
+	created, err := e.writeLocked(ctx, q, p, status)
 	if err != nil {
 		return PostedTransaction{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return PostedTransaction{}, fmt.Errorf("ledger: commit post: %w", err)
 	}
-	return posted, nil
+	return created, nil
 }
 
-// postLocked runs the validation and writes of a post inside the caller's
-// transaction, after the idempotency check has established this key is new.
-func (e *Engine) postLocked(ctx context.Context, q *store.Queries, p PostParams) (PostedTransaction, error) {
+// writeLocked runs the validation and writes of a create inside the
+// caller's transaction, after the idempotency check has established this
+// key is new. status selects the balance column the movement lands on and
+// the overdraft rule:
+//   - "posted": the resulting posted balance must stay non-negative.
+//   - "pending": the resulting available balance (posted + pending) must
+//     stay non-negative — earmarking may not overdraw spendable funds.
+func (e *Engine) writeLocked(ctx context.Context, q *store.Queries, p PostParams, status string) (PostedTransaction, error) {
 	// Resolve every entry's account; the double-entry rules (one asset per
 	// account, allow_negative flag) live on the account row.
 	accounts := make([]store.Account, len(p.Entries))
@@ -189,11 +225,13 @@ func (e *Engine) postLocked(ctx context.Context, q *store.Queries, p PostParams)
 	}
 
 	// Lock the affected balance rows in sorted account order so
-	// concurrent posts lock rows in one global order and cannot deadlock.
-	locked := make(map[string]store.Balance, len(p.Entries))
-	accountIDs := make([]string, 0, len(p.Entries))
-	for _, entry := range p.Entries {
-		accountIDs = append(accountIDs, entry.AccountID)
+	// concurrent writers lock rows in one global order and cannot
+	// deadlock.
+	deltas := netDeltas(p.Entries)
+	locked := make(map[string]store.Balance, len(deltas))
+	accountIDs := make([]string, 0, len(deltas))
+	for accountID := range deltas {
+		accountIDs = append(accountIDs, accountID)
 	}
 	sort.Strings(accountIDs)
 	for _, accountID := range accountIDs {
@@ -204,26 +242,31 @@ func (e *Engine) postLocked(ctx context.Context, q *store.Queries, p PostParams)
 		locked[accountID] = balance
 	}
 
-	// Overdraft: the resulting posted balance must stay non-negative
-	// unless the account is flagged allow_negative (system accounts).
-	deltas := make(map[string]decimal.Decimal, len(p.Entries))
-	for _, entry := range p.Entries {
-		deltas[entry.AccountID] = deltas[entry.AccountID].Add(entry.Amount)
-	}
+	// Overdraft: on post the resulting posted balance must stay
+	// non-negative; on a pending create the resulting available balance
+	// (posted + pending) must, so earmarked funds cannot be double-spent.
 	for accountID, delta := range deltas {
 		result := locked[accountID].Posted.Add(delta)
+		if status == "pending" {
+			result = result.Add(locked[accountID].Pending)
+		}
 		if result.IsNegative() {
 			for _, account := range accounts {
 				if account.ID == accountID && !account.AllowNegative {
-					return PostedTransaction{}, fmt.Errorf("ledger: %w: account %s would go to %s",
+					return PostedTransaction{}, fmt.Errorf("ledger: %w: account %s available would go to %s",
 						ErrOverdraft, accountID, result)
 				}
 			}
 		}
 	}
 
-	// Write: transaction (status 'posted', posted_at set), entries
-	// (UUIDv7 per ADR 0008), and balance updates — same transaction.
+	// Write: transaction, entries (UUIDv7 per ADR 0008), and balance
+	// updates — same transaction. A pending create leaves posted_at NULL;
+	// posted_at is stamped by PostTransaction, voided_at by VoidTransaction.
+	postedAt := pgtype.Timestamptz{}
+	if status == "posted" {
+		postedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
 	transactionID, err := uuid.NewV7()
 	if err != nil {
 		return PostedTransaction{}, fmt.Errorf("ledger: generate transaction id: %w", err)
@@ -232,8 +275,8 @@ func (e *Engine) postLocked(ctx context.Context, q *store.Queries, p PostParams)
 		ID:             pgtype.UUID{Bytes: transactionID, Valid: true},
 		IdempotencyKey: p.IdempotencyKey,
 		Reference:      pgtype.Text{String: p.Reference, Valid: p.Reference != ""},
-		Status:         "posted",
-		PostedAt:       pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		Status:         status,
+		PostedAt:       postedAt,
 	})
 	if err != nil {
 		// A concurrent duplicate key lands here rather than in the
@@ -276,14 +319,150 @@ func (e *Engine) postLocked(ctx context.Context, q *store.Queries, p PostParams)
 	}
 
 	for accountID, delta := range deltas {
-		if err := q.UpdateBalancePosted(ctx, store.UpdateBalancePostedParams{
-			AccountID: accountID,
-			Posted:    delta,
-		}); err != nil {
+		if status == "pending" {
+			err = q.UpdateBalancePending(ctx, store.UpdateBalancePendingParams{
+				AccountID: accountID,
+				Pending:   delta,
+			})
+		} else {
+			err = q.UpdateBalancePosted(ctx, store.UpdateBalancePostedParams{
+				AccountID: accountID,
+				Posted:    delta,
+			})
+		}
+		if err != nil {
 			return PostedTransaction{}, fmt.Errorf("ledger: update balance: %w", err)
 		}
 	}
 
+	return PostedTransaction{Transaction: transaction, Entries: entries}, nil
+}
+
+// PostTransaction settles a pending transaction: pending → posted. In one
+// database transaction it locks the transaction row, verifies the status
+// is still pending (posted and voided are terminal — re-posting either is
+// rejected with ErrTransactionNotPending and moves nothing, so a retry
+// after a timeout is safe), locks the affected balance rows FOR UPDATE in
+// sorted order, moves each account's earmarked amount from the pending
+// column onto the posted column, enforces allow_negative on the resulting
+// posted balance, and stamps posted_at.
+func (e *Engine) PostTransaction(ctx context.Context, id uuid.UUID) (PostedTransaction, error) {
+	return e.transition(ctx, id, true)
+}
+
+// VoidTransaction releases a pending transaction's earmark: pending →
+// voided. The pending amounts are removed with no posted movement, so
+// value settles nowhere; voided_at is stamped. Like PostTransaction it
+// runs in one database transaction, locks the transaction row first, and
+// rejects transactions that are no longer pending.
+func (e *Engine) VoidTransaction(ctx context.Context, id uuid.UUID) (PostedTransaction, error) {
+	return e.transition(ctx, id, false)
+}
+
+// transition is the shared body of PostTransaction (settle) and
+// VoidTransaction (release).
+func (e *Engine) transition(ctx context.Context, id uuid.UUID, settle bool) (PostedTransaction, error) {
+	tx, err := e.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return PostedTransaction{}, fmt.Errorf("ledger: begin transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := e.q.WithTx(tx)
+
+	// The transaction row lock serializes concurrent post/void attempts on
+	// the same transaction: only the first transition wins, every other
+	// sees the updated status and is rejected.
+	transaction, err := q.LockTransaction(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PostedTransaction{}, fmt.Errorf("ledger: %w: %s", ErrTransactionNotFound, id)
+		}
+		return PostedTransaction{}, fmt.Errorf("ledger: lock transaction: %w", err)
+	}
+	if transaction.Status != "pending" {
+		return PostedTransaction{}, fmt.Errorf("ledger: %w: status is %s", ErrTransactionNotPending, transaction.Status)
+	}
+
+	// Entries are immutable, so the per-account movement to settle or
+	// release is exactly the net of the entries written at creation.
+	entries, err := q.GetEntriesByTransaction(ctx, transaction.ID)
+	if err != nil {
+		return PostedTransaction{}, fmt.Errorf("ledger: load entries: %w", err)
+	}
+	movements := make([]PostEntry, len(entries))
+	for i, entry := range entries {
+		movements[i] = PostEntry{AccountID: entry.AccountID, Amount: entry.Amount}
+	}
+	deltas := netDeltas(movements)
+
+	// Lock the affected balance rows in sorted account order, same global
+	// order as every other balance mutation, so concurrent transitions
+	// cannot deadlock.
+	accountIDs := make([]string, 0, len(deltas))
+	for accountID := range deltas {
+		accountIDs = append(accountIDs, accountID)
+	}
+	sort.Strings(accountIDs)
+	locked := make(map[string]store.Balance, len(deltas))
+	for _, accountID := range accountIDs {
+		balance, err := q.LockBalance(ctx, accountID)
+		if err != nil {
+			return PostedTransaction{}, fmt.Errorf("ledger: lock balance: %w", err)
+		}
+		locked[accountID] = balance
+	}
+
+	// Settling lands the movement on the posted column: the resulting
+	// posted balance must stay non-negative unless the account is flagged
+	// allow_negative. Releasing only ever raises available, so it needs no
+	// overdraft check.
+	if settle {
+		for _, accountID := range accountIDs {
+			result := locked[accountID].Posted.Add(deltas[accountID])
+			if !result.IsNegative() {
+				continue
+			}
+			account, err := q.GetAccount(ctx, accountID)
+			if err != nil {
+				return PostedTransaction{}, fmt.Errorf("ledger: load account: %w", err)
+			}
+			if !account.AllowNegative {
+				return PostedTransaction{}, fmt.Errorf("ledger: %w: account %s would go to %s",
+					ErrOverdraft, accountID, result)
+			}
+		}
+	}
+
+	for _, accountID := range accountIDs {
+		delta := deltas[accountID]
+		if settle {
+			err = q.MoveBalancePendingToPosted(ctx, store.MoveBalancePendingToPostedParams{
+				AccountID: accountID,
+				Posted:    delta,
+			})
+		} else {
+			err = q.UpdateBalancePending(ctx, store.UpdateBalancePendingParams{
+				AccountID: accountID,
+				Pending:   delta.Neg(),
+			})
+		}
+		if err != nil {
+			return PostedTransaction{}, fmt.Errorf("ledger: update balance: %w", err)
+		}
+	}
+
+	if settle {
+		transaction, err = q.MarkTransactionPosted(ctx, transaction.ID)
+	} else {
+		transaction, err = q.MarkTransactionVoided(ctx, transaction.ID)
+	}
+	if err != nil {
+		return PostedTransaction{}, fmt.Errorf("ledger: mark transaction: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return PostedTransaction{}, fmt.Errorf("ledger: commit transition: %w", err)
+	}
 	return PostedTransaction{Transaction: transaction, Entries: entries}, nil
 }
 
@@ -302,6 +481,18 @@ func (e *Engine) GetTransaction(ctx context.Context, id uuid.UUID) (PostedTransa
 		return PostedTransaction{}, fmt.Errorf("ledger: get entries: %w", err)
 	}
 	return PostedTransaction{Transaction: transaction, Entries: entries}, nil
+}
+
+// netDeltas folds the entry list into the net movement per account.
+// Multiple entries against one account (a split) collapse into a single
+// delta — that net is what one balance update applies, at creation,
+// settle, and release alike.
+func netDeltas(entries []PostEntry) map[string]decimal.Decimal {
+	deltas := make(map[string]decimal.Decimal, len(entries))
+	for _, entry := range entries {
+		deltas[entry.AccountID] = deltas[entry.AccountID].Add(entry.Amount)
+	}
+	return deltas
 }
 
 // ValidateZeroSum returns ErrNonZeroSum unless the signed amounts net to
