@@ -31,6 +31,7 @@ const testAPIKey = "test-ledger-key"
 // cmd/ledger, including the auth interceptor on ProvisioningService.
 type env struct {
 	provision  ledgerv1connect.ProvisioningServiceClient
+	posting    ledgerv1connect.PostingServiceClient
 	health     ledgerv1connect.HealthServiceClient
 	httpServer *httptest.Server
 	container  *postgres.PostgresContainer
@@ -82,10 +83,15 @@ func setup(t *testing.T) *env {
 
 	// Same wiring as cmd/ledger: health public, provisioning behind the
 	// API-key interceptor.
+	engine := ledger.New(pool)
 	mux := http.NewServeMux()
 	mux.Handle(ledgerv1connect.NewHealthServiceHandler(rpc.NewHealthHandler(pool)))
 	mux.Handle(ledgerv1connect.NewProvisioningServiceHandler(
-		rpc.NewProvisioningHandler(pool, ledger.New(pool)),
+		rpc.NewProvisioningHandler(pool, engine),
+		connect.WithInterceptors(rpc.NewAuthInterceptor(testAPIKey)),
+	))
+	mux.Handle(ledgerv1connect.NewPostingServiceHandler(
+		rpc.NewPostingHandler(engine),
 		connect.WithInterceptors(rpc.NewAuthInterceptor(testAPIKey)),
 	))
 	server := httptest.NewServer(mux)
@@ -93,6 +99,7 @@ func setup(t *testing.T) *env {
 
 	return &env{
 		provision:  ledgerv1connect.NewProvisioningServiceClient(http.DefaultClient, server.URL),
+		posting:    ledgerv1connect.NewPostingServiceClient(http.DefaultClient, server.URL),
 		health:     ledgerv1connect.NewHealthServiceClient(http.DefaultClient, server.URL),
 		httpServer: server,
 		container:  container,
