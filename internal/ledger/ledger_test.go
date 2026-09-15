@@ -21,35 +21,35 @@ func dec(t *testing.T, s string) decimal.Decimal {
 func TestValidateZeroSum(t *testing.T) {
 	tests := []struct {
 		name    string
-		entries []PostEntry
+		entries []EntryInput
 		assets  []string // asset of entries[i]
 		wantErr error
 	}{
 		{
 			name:    "two entries net to zero",
-			entries: []PostEntry{{Amount: dec(t, "100.00")}, {Amount: dec(t, "-100.00")}},
+			entries: []EntryInput{{Amount: dec(t, "100.00")}, {Amount: dec(t, "-100.00")}},
 			assets:  []string{"usd", "usd"},
 		},
 		{
 			name:    "many entries net to zero",
-			entries: []PostEntry{{Amount: dec(t, "10")}, {Amount: dec(t, "20")}, {Amount: dec(t, "-15")}, {Amount: dec(t, "-15")}},
+			entries: []EntryInput{{Amount: dec(t, "10")}, {Amount: dec(t, "20")}, {Amount: dec(t, "-15")}, {Amount: dec(t, "-15")}},
 			assets:  []string{"usd", "usd", "usd", "usd"},
 		},
 		{
 			name:    "non-zero sum rejected",
-			entries: []PostEntry{{Amount: dec(t, "100.00")}, {Amount: dec(t, "-99.99")}},
+			entries: []EntryInput{{Amount: dec(t, "100.00")}, {Amount: dec(t, "-99.99")}},
 			assets:  []string{"usd", "usd"},
 			wantErr: ErrNonZeroSum,
 		},
 		{
 			name:    "independent groups must each net to zero",
-			entries: []PostEntry{{Amount: dec(t, "5")}, {Amount: dec(t, "-5")}, {Amount: dec(t, "7")}},
+			entries: []EntryInput{{Amount: dec(t, "5")}, {Amount: dec(t, "-5")}, {Amount: dec(t, "7")}},
 			assets:  []string{"usd", "usd", "eur"},
 			wantErr: ErrNonZeroSum,
 		},
 		{
 			name:    "cross-asset coincidence is not zero-sum",
-			entries: []PostEntry{{Amount: dec(t, "5")}, {Amount: dec(t, "-5")}, {Amount: dec(t, "7")}, {Amount: dec(t, "-7")}},
+			entries: []EntryInput{{Amount: dec(t, "5")}, {Amount: dec(t, "-5")}, {Amount: dec(t, "7")}, {Amount: dec(t, "-7")}},
 			assets:  []string{"usd", "usd", "eur", "eur"},
 		},
 	}
@@ -70,17 +70,17 @@ func TestValidateZeroSum(t *testing.T) {
 func TestNetDeltas(t *testing.T) {
 	tests := []struct {
 		name    string
-		entries []PostEntry
+		entries []EntryInput
 		want    map[string]decimal.Decimal
 	}{
 		{
 			name:    "single entry per account",
-			entries: []PostEntry{{AccountID: "a", Amount: dec(t, "-100.00")}, {AccountID: "b", Amount: dec(t, "100.00")}},
+			entries: []EntryInput{{AccountID: "a", Amount: dec(t, "-100.00")}, {AccountID: "b", Amount: dec(t, "100.00")}},
 			want:    map[string]decimal.Decimal{"a": dec(t, "-100.00"), "b": dec(t, "100.00")},
 		},
 		{
 			name: "split entries collapse into one net delta",
-			entries: []PostEntry{
+			entries: []EntryInput{
 				{AccountID: "a", Amount: dec(t, "-30.00")},
 				{AccountID: "a", Amount: dec(t, "-70.00")},
 				{AccountID: "b", Amount: dec(t, "100.00")},
@@ -89,7 +89,7 @@ func TestNetDeltas(t *testing.T) {
 		},
 		{
 			name:    "nets may cancel to zero per account",
-			entries: []PostEntry{{AccountID: "a", Amount: dec(t, "5")}, {AccountID: "a", Amount: dec(t, "-5")}},
+			entries: []EntryInput{{AccountID: "a", Amount: dec(t, "5")}, {AccountID: "a", Amount: dec(t, "-5")}},
 			want:    map[string]decimal.Decimal{"a": dec(t, "0")},
 		},
 	}

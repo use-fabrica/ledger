@@ -20,7 +20,9 @@ func main() {
 		log.Fatalf("usage: migrate <up|down|status|version> [args...]")
 	}
 
-	cfg, err := config.Load()
+	// The migrate deploy step runs without server secrets (no API key in
+	// scope); only the database URL is needed.
+	cfg, err := config.LoadBase()
 	if err != nil {
 		log.Fatalf("migrate: %v", err)
 	}

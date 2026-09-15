@@ -1,7 +1,7 @@
 -- Audit and lookup reads (ticket #6). These queries never mutate state;
 -- they back the AuditService list/lookup endpoints. Wallet transaction
--- listing is scoped to status 'posted' for now — pending-state filtering
--- arrives with the pending-lifecycle ticket (#5).
+-- listing is not status-scoped: it returns every status (posted, pending,
+-- voided) unless the caller passes an exact status filter.
 
 -- name: ListAccountEntries :many
 -- One account's complete movement history, chronological. The caller
@@ -13,22 +13,23 @@ WHERE account_id = $1
 ORDER BY created_at, id
 LIMIT $2 OFFSET $3;
 
--- name: ListWalletPostedTransactions :many
--- Every posted transaction that touches any account of the wallet. A
--- transaction debiting one wallet account and crediting another of the
+-- name: ListWalletTransactions :many
+-- Every transaction that touches any account of the wallet — of any
+-- status by default, or exactly the requested status when one is passed.
+-- A transaction debiting one wallet account and crediting another of the
 -- same wallet still appears exactly once (EXISTS, not a join).
 SELECT t.id, t.idempotency_key, t.reference, t.status, t.metadata, t.created_at, t.posted_at, t.voided_at
 FROM transactions t
-WHERE t.status = 'posted'
+WHERE (sqlc.narg('status')::text IS NULL OR t.status = sqlc.narg('status'))
   AND EXISTS (
       SELECT 1
       FROM entries e
       JOIN accounts a ON a.id = e.account_id
       WHERE e.transaction_id = t.id
-        AND a.wallet_id = $1
+        AND a.wallet_id = sqlc.arg('wallet_id')
   )
 ORDER BY t.created_at, t.id
-LIMIT $2 OFFSET $3;
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: GetTransactionByReference :one
 -- Provider references (e.g. a Stripe charge ID) are indexed but not
