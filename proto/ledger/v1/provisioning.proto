@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package ledger.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// ProvisioningService is the host app's setup surface: define assets,
+// register holders, and create the wallet/account structure that posting
+// (ticket: posting engine) later moves value across. All RPCs are gated by
+// the API-key auth middleware; only HealthService is public.
+service ProvisioningService {
+  rpc CreateAsset(CreateAssetRequest) returns (Asset);
+  rpc ListAssets(ListAssetsRequest) returns (ListAssetsResponse);
+  rpc CreateHolder(CreateHolderRequest) returns (Holder);
+  rpc CreateWallet(CreateWalletRequest) returns (Wallet);
+  rpc CreateAccount(CreateAccountRequest) returns (Account);
+  rpc GetWalletBalances(GetWalletBalancesRequest) returns (GetWalletBalancesResponse);
+}
+
+// HolderType mirrors the holders.type CHECK constraint. The ledger never
+// stores identity data: a holder is just the host app's external reference
+// plus its role.
+enum HolderType {
+  HOLDER_TYPE_UNSPECIFIED = 0;
+  HOLDER_TYPE_USER = 1;
+  HOLDER_TYPE_SYSTEM = 2;
+  HOLDER_TYPE_PROVIDER = 3;
+}
+
+message Asset {
+  string id = 1;
+  string code = 2;
+  int32 precision = 3;
+  google.protobuf.Struct metadata = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message Holder {
+  string id = 1;
+  HolderType type = 2;
+  string external_ref = 3;
+  google.protobuf.Struct metadata = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message Wallet {
+  string id = 1;
+  string holder_id = 2;
+  string name = 3;
+  google.protobuf.Struct metadata = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message Account {
+  string id = 1;
+  string wallet_id = 2;
+  string asset_id = 3;
+  bool allow_negative = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message CreateAssetRequest {
+  string code = 1;
+  int32 precision = 2;
+  google.protobuf.Struct metadata = 3;
+}
+
+message ListAssetsRequest {}
+
+message ListAssetsResponse {
+  repeated Asset assets = 1;
+}
+
+message CreateHolderRequest {
+  HolderType type = 1;
+  string external_ref = 2;
+  google.protobuf.Struct metadata = 3;
+}
+
+message CreateWalletRequest {
+  string holder_id = 1;
+  string name = 2;
+  google.protobuf.Struct metadata = 3;
+}
+
+message CreateAccountRequest {
+  string wallet_id = 1;
+  string asset_id = 2;
+  // allow_negative defaults to false when unset: user accounts may not
+  // overdraw. Reserved for system accounts.
+  optional bool allow_negative = 3;
+}
+
+message GetWalletBalancesRequest {
+  string wallet_id = 1;
+}
+
+// AccountBalance is one account of the wallet with its materialized
+// balances. Amounts are decimal strings (e.g. "1234.56") in the account's
+// asset precision, matching shopspring/decimal serialization. pending
+// holds net earmarked amounts with the same sign as the holds' entries
+// (negative for outgoing), so available = posted + pending is what the
+// account can still spend.
+message AccountBalance {
+  Account account = 1;
+  string posted = 2;
+  string pending = 3;
+  string available = 4;
+}
+
+message GetWalletBalancesResponse {
+  string wallet_id = 1;
+  repeated AccountBalance balances = 2;
+}

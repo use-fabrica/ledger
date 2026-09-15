@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package ledger.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// PostingService is the host app's value-movement surface: create and read
+// double-entry transactions. Every write carries a client-supplied
+// idempotency key so retries never double-apply value; replays return the
+// original transaction. Entries are immutable once written — there is no
+// update or delete path. Transactions are created either posted
+// (CreateTransaction) or pending (CreatePendingTransaction); a pending
+// transaction earmarks funds until it is settled with PostTransaction or
+// released with VoidTransaction.
+service PostingService {
+  rpc CreateTransaction(CreateTransactionRequest) returns (Transaction);
+  rpc CreatePendingTransaction(CreatePendingTransactionRequest) returns (Transaction);
+  rpc PostTransaction(PostTransactionRequest) returns (Transaction);
+  rpc VoidTransaction(VoidTransactionRequest) returns (Transaction);
+  rpc GetTransaction(GetTransactionRequest) returns (Transaction);
+}
+
+// TransactionStatus mirrors the transactions.status CHECK constraint.
+enum TransactionStatus {
+  TRANSACTION_STATUS_UNSPECIFIED = 0;
+  TRANSACTION_STATUS_PENDING = 1;
+  TRANSACTION_STATUS_POSTED = 2;
+  TRANSACTION_STATUS_VOIDED = 3;
+}
+
+// TransactionInputEntry is one signed entry of the requested transaction:
+// value applied to one account. Amount is a signed decimal string
+// ("-100.00", "42.5") in the account's asset precision.
+message TransactionInputEntry {
+  string account_id = 1;
+  string amount = 2;
+}
+
+message CreateTransactionRequest {
+  // Required: deduplicates retries. Replaying a key returns the original
+  // transaction with no additional balance movement.
+  string idempotency_key = 1;
+  // Optional nullable provider reference (e.g. a Stripe charge ID) used
+  // for webhook deduplication and reconciliation.
+  optional string reference = 2;
+  // At least two entries; their signed amounts must net to zero per
+  // asset, no amount may be zero, and no amount may carry more
+  // fractional digits than its asset's precision.
+  repeated TransactionInputEntry entries = 3;
+}
+
+message GetTransactionRequest {
+  string id = 1;
+}
+
+// CreatePendingTransactionRequest earmarks funds instead of settling them:
+// same shape and validation as CreateTransactionRequest, but the balance
+// movement lands on the pending column and the transaction starts in
+// status PENDING. A creation that would overdraw the available balance
+// (posted + pending) of an account that is not allow_negative is
+// rejected, even when the posted balance alone would allow it.
+message CreatePendingTransactionRequest {
+  // Required: deduplicates retries. Replaying a key returns the original
+  // pending transaction with no additional earmark.
+  string idempotency_key = 1;
+  // Optional nullable provider reference (e.g. a Stripe charge ID) used
+  // for webhook deduplication and reconciliation.
+  optional string reference = 2;
+  // At least two entries; their signed amounts must net to zero per
+  // asset, no amount may be zero, and no amount may carry more
+  // fractional digits than its asset's precision.
+  repeated TransactionInputEntry entries = 3;
+}
+
+// PostTransactionRequest settles a pending transaction: the earmarked
+// amounts move from pending to posted and the transaction becomes
+// terminal. Re-posting a transaction that is already posted is a safe
+// retry: it returns the transaction and moves nothing. Posting a voided
+// transaction is rejected (failed_precondition) — a released transaction
+// can never settle.
+message PostTransactionRequest {
+  string id = 1;
+}
+
+// VoidTransactionRequest releases a pending transaction's earmark with no
+// posted movement and the transaction becomes terminal. Re-voiding a
+// transaction that is already voided is a safe retry: it returns the
+// transaction and moves nothing. Voiding a posted transaction is rejected
+// (failed_precondition) — a settled transaction can only be compensated,
+// never clawed back.
+message VoidTransactionRequest {
+  string id = 1;
+}
+
+message Transaction {
+  string id = 1;
+  string idempotency_key = 2;
+  optional string reference = 3;
+  TransactionStatus status = 4;
+  repeated Entry entries = 5;
+  google.protobuf.Timestamp created_at = 6;
+  // posted_at is set when a pending transaction settles (or at creation
+  // for directly-posted transactions); it stays unset on voided ones.
+  google.protobuf.Timestamp posted_at = 7;
+  // voided_at is set when a pending transaction is voided; unset
+  // otherwise.
+  google.protobuf.Timestamp voided_at = 8;
+}
+
+// Entry is one immutable, signed amount applied to one account as part of
+// a transaction. Amount is a signed decimal string.
+message Entry {
+  string id = 1;
+  string transaction_id = 2;
+  string account_id = 3;
+  string amount = 4;
+  google.protobuf.Timestamp created_at = 5;
+}

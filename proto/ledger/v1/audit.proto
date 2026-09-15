@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package ledger.v1;
+
+import "ledger/v1/posting.proto";
+
+// AuditService is the read-only reconciliation surface: the immutable
+// entry history per account, the transaction history per wallet, and
+// exact transaction lookups by idempotency key or provider reference.
+// It exposes no writes; every mutation lives on PostingService.
+//
+// Pagination is offset-based, not cursor-based: the journal is
+// append-only and every list is ordered by (created_at, id), which is
+// stable for a fixed prefix of history, and audit consumers page through
+// modest sizes. Requests carry page_size (default 50, clamped to a
+// maximum of 100) and a 0-based page_offset; a response carries
+// next_page_offset only while a further page exists. Appends that land
+// mid-pagination can shift later offsets — acceptable for audit reads,
+// and a token scheme can layer over these fields later without breaking
+// the layout.
+service AuditService {
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
+  rpc ListWalletTransactions(ListWalletTransactionsRequest) returns (ListWalletTransactionsResponse);
+  rpc GetTransactionByIdempotencyKey(GetTransactionByIdempotencyKeyRequest) returns (Transaction);
+  rpc GetTransactionByReference(GetTransactionByReferenceRequest) returns (Transaction);
+}
+
+message ListEntriesRequest {
+  // Required: the account whose complete movement history is listed.
+  string account_id = 1;
+  uint32 page_size = 2;
+  uint32 page_offset = 3;
+}
+
+message ListEntriesResponse {
+  // Chronological (created_at, id) page of the account's immutable
+  // entries. Running totals are derivable by accumulating the signed
+  // amounts in order.
+  repeated Entry entries = 1;
+  // Present only while a further page exists.
+  optional uint32 next_page_offset = 2;
+}
+
+message ListWalletTransactionsRequest {
+  // Required: the wallet whose accounts' transactions are listed.
+  string wallet_id = 1;
+  uint32 page_size = 2;
+  uint32 page_offset = 3;
+  // Optional: filter to exactly this transaction status. Unset lists
+  // transactions of every status — posted, pending, and voided — so
+  // reconciliation sees the complete journal, not only settled movements.
+  optional TransactionStatus status = 4;
+}
+
+message ListWalletTransactionsResponse {
+  // Chronological (created_at, id) page of every transaction touching any
+  // account of the wallet, of any status unless the request filtered by
+  // status, entries included. A transaction moving value between two
+  // accounts of the same wallet appears exactly once.
+  repeated Transaction transactions = 1;
+  // Present only while a further page exists.
+  optional uint32 next_page_offset = 2;
+}
+
+message GetTransactionByIdempotencyKeyRequest {
+  // Required: the client-supplied key of the original write. Idempotency
+  // keys are unique, so the match is exact.
+  string idempotency_key = 1;
+}
+
+message GetTransactionByReferenceRequest {
+  // Required: the provider reference (e.g. a Stripe charge ID). The
+  // schema indexes but does not unique this column — a charge and its
+  // refund may share a reference — so the lookup returns the most
+  // recently created matching transaction, or not-found when none
+  // exists.
+  string reference = 1;
+}
