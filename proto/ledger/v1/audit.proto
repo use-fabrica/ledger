@@ -46,14 +46,17 @@ message ListWalletTransactionsRequest {
   string wallet_id = 1;
   uint32 page_size = 2;
   uint32 page_offset = 3;
+  // Optional: filter to exactly this transaction status. Unset lists
+  // transactions of every status — posted, pending, and voided — so
+  // reconciliation sees the complete journal, not only settled movements.
+  optional TransactionStatus status = 4;
 }
 
 message ListWalletTransactionsResponse {
-  // Chronological (created_at, id) page of every posted transaction
-  // touching any account of the wallet, entries included. Transactions
-  // are scoped to status 'posted' for now; pending-state filtering
-  // arrives with the pending-lifecycle ticket. A transaction moving
-  // value between two accounts of the same wallet appears exactly once.
+  // Chronological (created_at, id) page of every transaction touching any
+  // account of the wallet, of any status unless the request filtered by
+  // status, entries included. A transaction moving value between two
+  // accounts of the same wallet appears exactly once.
   repeated Transaction transactions = 1;
   // Present only while a further page exists.
   optional uint32 next_page_offset = 2;

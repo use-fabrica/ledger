@@ -141,9 +141,13 @@ func (x *ListEntriesResponse) GetNextPageOffset() uint32 {
 type ListWalletTransactionsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required: the wallet whose accounts' transactions are listed.
-	WalletId      string `protobuf:"bytes,1,opt,name=wallet_id,json=walletId,proto3" json:"wallet_id,omitempty"`
-	PageSize      uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
-	PageOffset    uint32 `protobuf:"varint,3,opt,name=page_offset,json=pageOffset,proto3" json:"page_offset,omitempty"`
+	WalletId   string `protobuf:"bytes,1,opt,name=wallet_id,json=walletId,proto3" json:"wallet_id,omitempty"`
+	PageSize   uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	PageOffset uint32 `protobuf:"varint,3,opt,name=page_offset,json=pageOffset,proto3" json:"page_offset,omitempty"`
+	// Optional: filter to exactly this transaction status. Unset lists
+	// transactions of every status — posted, pending, and voided — so
+	// reconciliation sees the complete journal, not only settled movements.
+	Status        *TransactionStatus `protobuf:"varint,4,opt,name=status,proto3,enum=ledger.v1.TransactionStatus,oneof" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -199,13 +203,19 @@ func (x *ListWalletTransactionsRequest) GetPageOffset() uint32 {
 	return 0
 }
 
+func (x *ListWalletTransactionsRequest) GetStatus() TransactionStatus {
+	if x != nil && x.Status != nil {
+		return *x.Status
+	}
+	return TransactionStatus_TRANSACTION_STATUS_UNSPECIFIED
+}
+
 type ListWalletTransactionsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Chronological (created_at, id) page of every posted transaction
-	// touching any account of the wallet, entries included. Transactions
-	// are scoped to status 'posted' for now; pending-state filtering
-	// arrives with the pending-lifecycle ticket. A transaction moving
-	// value between two accounts of the same wallet appears exactly once.
+	// Chronological (created_at, id) page of every transaction touching any
+	// account of the wallet, of any status unless the request filtered by
+	// status, entries included. A transaction moving value between two
+	// accounts of the same wallet appears exactly once.
 	Transactions []*Transaction `protobuf:"bytes,1,rep,name=transactions,proto3" json:"transactions,omitempty"`
 	// Present only while a further page exists.
 	NextPageOffset *uint32 `protobuf:"varint,2,opt,name=next_page_offset,json=nextPageOffset,proto3,oneof" json:"next_page_offset,omitempty"`
@@ -366,12 +376,14 @@ const file_ledger_v1_audit_proto_rawDesc = "" +
 	"\x13ListEntriesResponse\x12*\n" +
 	"\aentries\x18\x01 \x03(\v2\x10.ledger.v1.EntryR\aentries\x12-\n" +
 	"\x10next_page_offset\x18\x02 \x01(\rH\x00R\x0enextPageOffset\x88\x01\x01B\x13\n" +
-	"\x11_next_page_offset\"z\n" +
+	"\x11_next_page_offset\"\xc0\x01\n" +
 	"\x1dListWalletTransactionsRequest\x12\x1b\n" +
 	"\twallet_id\x18\x01 \x01(\tR\bwalletId\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12\x1f\n" +
 	"\vpage_offset\x18\x03 \x01(\rR\n" +
-	"pageOffset\"\xa0\x01\n" +
+	"pageOffset\x129\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x1c.ledger.v1.TransactionStatusH\x00R\x06status\x88\x01\x01B\t\n" +
+	"\a_status\"\xa0\x01\n" +
 	"\x1eListWalletTransactionsResponse\x12:\n" +
 	"\ftransactions\x18\x01 \x03(\v2\x16.ledger.v1.TransactionR\ftransactions\x12-\n" +
 	"\x10next_page_offset\x18\x02 \x01(\rH\x00R\x0enextPageOffset\x88\x01\x01B\x13\n" +
@@ -410,24 +422,26 @@ var file_ledger_v1_audit_proto_goTypes = []any{
 	(*GetTransactionByIdempotencyKeyRequest)(nil), // 4: ledger.v1.GetTransactionByIdempotencyKeyRequest
 	(*GetTransactionByReferenceRequest)(nil),      // 5: ledger.v1.GetTransactionByReferenceRequest
 	(*Entry)(nil),                                 // 6: ledger.v1.Entry
-	(*Transaction)(nil),                           // 7: ledger.v1.Transaction
+	(TransactionStatus)(0),                        // 7: ledger.v1.TransactionStatus
+	(*Transaction)(nil),                           // 8: ledger.v1.Transaction
 }
 var file_ledger_v1_audit_proto_depIdxs = []int32{
 	6, // 0: ledger.v1.ListEntriesResponse.entries:type_name -> ledger.v1.Entry
-	7, // 1: ledger.v1.ListWalletTransactionsResponse.transactions:type_name -> ledger.v1.Transaction
-	0, // 2: ledger.v1.AuditService.ListEntries:input_type -> ledger.v1.ListEntriesRequest
-	2, // 3: ledger.v1.AuditService.ListWalletTransactions:input_type -> ledger.v1.ListWalletTransactionsRequest
-	4, // 4: ledger.v1.AuditService.GetTransactionByIdempotencyKey:input_type -> ledger.v1.GetTransactionByIdempotencyKeyRequest
-	5, // 5: ledger.v1.AuditService.GetTransactionByReference:input_type -> ledger.v1.GetTransactionByReferenceRequest
-	1, // 6: ledger.v1.AuditService.ListEntries:output_type -> ledger.v1.ListEntriesResponse
-	3, // 7: ledger.v1.AuditService.ListWalletTransactions:output_type -> ledger.v1.ListWalletTransactionsResponse
-	7, // 8: ledger.v1.AuditService.GetTransactionByIdempotencyKey:output_type -> ledger.v1.Transaction
-	7, // 9: ledger.v1.AuditService.GetTransactionByReference:output_type -> ledger.v1.Transaction
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	7, // 1: ledger.v1.ListWalletTransactionsRequest.status:type_name -> ledger.v1.TransactionStatus
+	8, // 2: ledger.v1.ListWalletTransactionsResponse.transactions:type_name -> ledger.v1.Transaction
+	0, // 3: ledger.v1.AuditService.ListEntries:input_type -> ledger.v1.ListEntriesRequest
+	2, // 4: ledger.v1.AuditService.ListWalletTransactions:input_type -> ledger.v1.ListWalletTransactionsRequest
+	4, // 5: ledger.v1.AuditService.GetTransactionByIdempotencyKey:input_type -> ledger.v1.GetTransactionByIdempotencyKeyRequest
+	5, // 6: ledger.v1.AuditService.GetTransactionByReference:input_type -> ledger.v1.GetTransactionByReferenceRequest
+	1, // 7: ledger.v1.AuditService.ListEntries:output_type -> ledger.v1.ListEntriesResponse
+	3, // 8: ledger.v1.AuditService.ListWalletTransactions:output_type -> ledger.v1.ListWalletTransactionsResponse
+	8, // 9: ledger.v1.AuditService.GetTransactionByIdempotencyKey:output_type -> ledger.v1.Transaction
+	8, // 10: ledger.v1.AuditService.GetTransactionByReference:output_type -> ledger.v1.Transaction
+	7, // [7:11] is the sub-list for method output_type
+	3, // [3:7] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_ledger_v1_audit_proto_init() }
@@ -437,6 +451,7 @@ func file_ledger_v1_audit_proto_init() {
 	}
 	file_ledger_v1_posting_proto_init()
 	file_ledger_v1_audit_proto_msgTypes[1].OneofWrappers = []any{}
+	file_ledger_v1_audit_proto_msgTypes[2].OneofWrappers = []any{}
 	file_ledger_v1_audit_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

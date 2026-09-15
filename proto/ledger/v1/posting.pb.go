@@ -316,8 +316,10 @@ func (x *CreatePendingTransactionRequest) GetEntries() []*TransactionInputEntry 
 
 // PostTransactionRequest settles a pending transaction: the earmarked
 // amounts move from pending to posted and the transaction becomes
-// terminal. Posting a transaction that is already posted or voided is
-// rejected (failed_precondition) — terminal states are final.
+// terminal. Re-posting a transaction that is already posted is a safe
+// retry: it returns the transaction and moves nothing. Posting a voided
+// transaction is rejected (failed_precondition) — a released transaction
+// can never settle.
 type PostTransactionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -363,9 +365,11 @@ func (x *PostTransactionRequest) GetId() string {
 }
 
 // VoidTransactionRequest releases a pending transaction's earmark with no
-// posted movement and the transaction becomes terminal. Voiding a
-// transaction that is already posted or voided is rejected
-// (failed_precondition) — terminal states are final.
+// posted movement and the transaction becomes terminal. Re-voiding a
+// transaction that is already voided is a safe retry: it returns the
+// transaction and moves nothing. Voiding a posted transaction is rejected
+// (failed_precondition) — a settled transaction can only be compensated,
+// never clawed back.
 type VoidTransactionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`

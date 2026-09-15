@@ -26,8 +26,10 @@ import (
 //     can be fixed and retried with a new key).
 //   - failed_precondition: the request is well-formed but the current
 //     state forbids it — an overdraft on an account that is not flagged
-//     allow_negative, or a post/void against a transaction that is no
-//     longer pending (terminal states are final).
+//     allow_negative, or the opposite terminal transition (posting a
+//     voided transaction, voiding a posted one). Repeating a transition
+//     that already reached its terminal state is not an error: it
+//     returns the transaction unchanged, so retries are safe.
 //   - not_found: a referenced account or transaction does not exist.
 //   - already_exists: unused; idempotent replays succeed with the
 //     original transaction instead of conflicting.
@@ -74,9 +76,9 @@ func (h *PostingHandler) CreatePendingTransaction(
 }
 
 // PostTransaction settles a pending transaction. Re-posting a transaction
-// that is already posted or voided fails with failed_precondition and
-// moves nothing — the rejection is the idempotency answer for a retried
-// settle, since the terminal row records that the settle happened.
+// that is already posted is a safe retry: it returns the transaction and
+// moves nothing. Posting a voided transaction fails with
+// failed_precondition — a released transaction can never settle.
 func (h *PostingHandler) PostTransaction(
 	ctx context.Context,
 	req *connect.Request[ledgerv1.PostTransactionRequest],
@@ -93,8 +95,10 @@ func (h *PostingHandler) PostTransaction(
 }
 
 // VoidTransaction releases a pending transaction's earmark. Re-voiding a
-// transaction that is already voided or posted fails with
-// failed_precondition and moves nothing.
+// transaction that is already voided is a safe retry: it returns the
+// transaction and moves nothing. Voiding a posted transaction fails with
+// failed_precondition — a settled transaction can only be compensated,
+// never clawed back.
 func (h *PostingHandler) VoidTransaction(
 	ctx context.Context,
 	req *connect.Request[ledgerv1.VoidTransactionRequest],
@@ -121,7 +125,7 @@ func parsePostParams(key, reference string, in []*ledgerv1.TransactionInputEntry
 		return ledger.PostParams{}, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("rpc: at least two entries are required"))
 	}
-	entries := make([]ledger.PostEntry, 0, len(in))
+	entries := make([]ledger.EntryInput, 0, len(in))
 	for _, e := range in {
 		if e.GetAccountId() == "" {
 			return ledger.PostParams{}, connect.NewError(connect.CodeInvalidArgument,
@@ -132,7 +136,7 @@ func parsePostParams(key, reference string, in []*ledgerv1.TransactionInputEntry
 			return ledger.PostParams{}, connect.NewError(connect.CodeInvalidArgument,
 				errors.New("rpc: entry amounts must be decimal strings"))
 		}
-		entries = append(entries, ledger.PostEntry{
+		entries = append(entries, ledger.EntryInput{
 			AccountID: e.GetAccountId(),
 			Amount:    amount,
 		})
@@ -198,7 +202,7 @@ func postedToProto(p ledger.PostedTransaction) *ledgerv1.Transaction {
 	proto := &ledgerv1.Transaction{
 		Id:             uuid.UUID(tx.ID.Bytes).String(),
 		IdempotencyKey: tx.IdempotencyKey,
-		Status:         transactionStatusToProto(tx.Status),
+		Status:         transactionStatusToProto(ledger.TransactionStatus(tx.Status)),
 		CreatedAt:      timestamppb.New(tx.CreatedAt.Time),
 		Entries:        make([]*ledgerv1.Entry, 0, len(p.Entries)),
 	}
@@ -223,15 +227,30 @@ func postedToProto(p ledger.PostedTransaction) *ledgerv1.Transaction {
 	return proto
 }
 
-func transactionStatusToProto(status string) ledgerv1.TransactionStatus {
+func transactionStatusToProto(status ledger.TransactionStatus) ledgerv1.TransactionStatus {
 	switch status {
-	case "pending":
+	case ledger.StatusPending:
 		return ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING
-	case "posted":
+	case ledger.StatusPosted:
 		return ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED
-	case "voided":
+	case ledger.StatusVoided:
 		return ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED
 	default:
 		return ledgerv1.TransactionStatus_TRANSACTION_STATUS_UNSPECIFIED
+	}
+}
+
+// protoStatusToEngine maps a wire status to its engine value. UNSPECIFIED
+// (or any unknown value) maps to "" so callers can reject it.
+func protoStatusToEngine(status ledgerv1.TransactionStatus) ledger.TransactionStatus {
+	switch status {
+	case ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING:
+		return ledger.StatusPending
+	case ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED:
+		return ledger.StatusPosted
+	case ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED:
+		return ledger.StatusVoided
+	default:
+		return ""
 	}
 }

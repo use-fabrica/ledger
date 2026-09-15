@@ -57,8 +57,8 @@ type ListAccountEntriesParams struct {
 
 // Audit and lookup reads (ticket #6). These queries never mutate state;
 // they back the AuditService list/lookup endpoints. Wallet transaction
-// listing is scoped to status 'posted' for now — pending-state filtering
-// arrives with the pending-lifecycle ticket (#5).
+// listing is not status-scoped: it returns every status (posted, pending,
+// voided) unless the caller passes an exact status filter.
 // One account's complete movement history, chronological. The caller
 // passes limit = page_size + 1 so it can detect a further page without a
 // COUNT query, then trims the extra row.
@@ -88,32 +88,39 @@ func (q *Queries) ListAccountEntries(ctx context.Context, arg ListAccountEntries
 	return items, nil
 }
 
-const listWalletPostedTransactions = `-- name: ListWalletPostedTransactions :many
+const listWalletTransactions = `-- name: ListWalletTransactions :many
 SELECT t.id, t.idempotency_key, t.reference, t.status, t.metadata, t.created_at, t.posted_at, t.voided_at
 FROM transactions t
-WHERE t.status = 'posted'
+WHERE ($1::text IS NULL OR t.status = $1)
   AND EXISTS (
       SELECT 1
       FROM entries e
       JOIN accounts a ON a.id = e.account_id
       WHERE e.transaction_id = t.id
-        AND a.wallet_id = $1
+        AND a.wallet_id = $2
   )
 ORDER BY t.created_at, t.id
-LIMIT $2 OFFSET $3
+LIMIT $4 OFFSET $3
 `
 
-type ListWalletPostedTransactionsParams struct {
+type ListWalletTransactionsParams struct {
+	Status   pgtype.Text
 	WalletID string
-	Limit    int32
 	Offset   int32
+	Limit    int32
 }
 
-// Every posted transaction that touches any account of the wallet. A
-// transaction debiting one wallet account and crediting another of the
+// Every transaction that touches any account of the wallet — of any
+// status by default, or exactly the requested status when one is passed.
+// A transaction debiting one wallet account and crediting another of the
 // same wallet still appears exactly once (EXISTS, not a join).
-func (q *Queries) ListWalletPostedTransactions(ctx context.Context, arg ListWalletPostedTransactionsParams) ([]Transaction, error) {
-	rows, err := q.db.Query(ctx, listWalletPostedTransactions, arg.WalletID, arg.Limit, arg.Offset)
+func (q *Queries) ListWalletTransactions(ctx context.Context, arg ListWalletTransactionsParams) ([]Transaction, error) {
+	rows, err := q.db.Query(ctx, listWalletTransactions,
+		arg.Status,
+		arg.WalletID,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

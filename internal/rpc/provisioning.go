@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nrednav/cuid2"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/use-fabrica/ledger/internal/ledger"
-	"github.com/use-fabrica/ledger/internal/store"
 	ledgerv1 "github.com/use-fabrica/ledger/proto/ledger/v1"
 )
 
@@ -26,16 +25,15 @@ const (
 )
 
 // ProvisioningHandler implements ledger.v1.ProvisioningService: the host
-// app's setup surface (assets, holders, wallets, accounts, balance reads).
-// Asset/holder/wallet writes go straight to the store; anything touching
-// the balances table goes through the posting engine in internal/ledger.
+// app's setup surface (assets, holders, wallets, accounts, balance
+// reads). It delegates every operation to the posting engine and never
+// touches the store directly.
 type ProvisioningHandler struct {
-	q      *store.Queries
 	engine *ledger.Engine
 }
 
-func NewProvisioningHandler(pool *pgxpool.Pool, engine *ledger.Engine) *ProvisioningHandler {
-	return &ProvisioningHandler{q: store.New(pool), engine: engine}
+func NewProvisioningHandler(engine *ledger.Engine) *ProvisioningHandler {
+	return &ProvisioningHandler{engine: engine}
 }
 
 func (h *ProvisioningHandler) CreateAsset(
@@ -53,30 +51,25 @@ func (h *ProvisioningHandler) CreateAsset(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	asset, err := h.q.CreateAsset(ctx, store.CreateAssetParams{
-		ID:        cuid2.Generate(),
-		Code:      msg.GetCode(),
-		Precision: msg.GetPrecision(),
-		Metadata:  metadata,
-	})
+	asset, err := h.engine.CreateAsset(ctx, cuid2.Generate(), msg.GetCode(), msg.GetPrecision(), metadata)
 	if err != nil {
 		return nil, mapStoreError(err, violation{pgUniqueViolation, "assets_code_key",
 			connect.CodeAlreadyExists, "asset code already exists"})
 	}
-	return connect.NewResponse(assetToProto(asset)), nil
+	return connect.NewResponse(assetToProto(asset.ID, asset.Code, asset.Precision, asset.Metadata, asset.CreatedAt.Time)), nil
 }
 
 func (h *ProvisioningHandler) ListAssets(
 	ctx context.Context,
 	_ *connect.Request[ledgerv1.ListAssetsRequest],
 ) (*connect.Response[ledgerv1.ListAssetsResponse], error) {
-	rows, err := h.q.ListAssets(ctx)
+	rows, err := h.engine.ListAssets(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	assets := make([]*ledgerv1.Asset, 0, len(rows))
 	for _, row := range rows {
-		assets = append(assets, assetToProto(row))
+		assets = append(assets, assetToProto(row.ID, row.Code, row.Precision, row.Metadata, row.CreatedAt.Time))
 	}
 	return connect.NewResponse(&ledgerv1.ListAssetsResponse{Assets: assets}), nil
 }
@@ -97,17 +90,12 @@ func (h *ProvisioningHandler) CreateHolder(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	holder, err := h.q.CreateHolder(ctx, store.CreateHolderParams{
-		ID:          cuid2.Generate(),
-		Type:        holderType,
-		ExternalRef: msg.GetExternalRef(),
-		Metadata:    metadata,
-	})
+	holder, err := h.engine.CreateHolder(ctx, cuid2.Generate(), holderType, msg.GetExternalRef(), metadata)
 	if err != nil {
 		return nil, mapStoreError(err, violation{pgUniqueViolation, "holders_external_ref_key",
 			connect.CodeAlreadyExists, "holder external_ref already exists"})
 	}
-	return connect.NewResponse(holderToProto(holder)), nil
+	return connect.NewResponse(holderToProto(holder.ID, holder.Type, holder.ExternalRef, holder.Metadata, holder.CreatedAt.Time)), nil
 }
 
 func (h *ProvisioningHandler) CreateWallet(
@@ -125,17 +113,12 @@ func (h *ProvisioningHandler) CreateWallet(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	wallet, err := h.q.CreateWallet(ctx, store.CreateWalletParams{
-		ID:       cuid2.Generate(),
-		HolderID: msg.GetHolderId(),
-		Name:     msg.GetName(),
-		Metadata: metadata,
-	})
+	wallet, err := h.engine.CreateWallet(ctx, cuid2.Generate(), msg.GetHolderId(), msg.GetName(), metadata)
 	if err != nil {
 		return nil, mapStoreError(err, violation{pgForeignKeyViolation, "wallets_holder_id_fkey",
 			connect.CodeNotFound, "holder not found"})
 	}
-	return connect.NewResponse(walletToProto(wallet)), nil
+	return connect.NewResponse(walletToProto(wallet.ID, wallet.HolderID, wallet.Name, wallet.Metadata, wallet.CreatedAt.Time)), nil
 }
 
 func (h *ProvisioningHandler) CreateAccount(
@@ -162,7 +145,7 @@ func (h *ProvisioningHandler) CreateAccount(
 				connect.CodeNotFound, "asset not found"},
 		)
 	}
-	return connect.NewResponse(accountToProto(account)), nil
+	return connect.NewResponse(accountToProto(account.ID, account.WalletID, account.AssetID, account.AllowNegative, account.CreatedAt.Time)), nil
 }
 
 func (h *ProvisioningHandler) GetWalletBalances(
@@ -173,9 +156,11 @@ func (h *ProvisioningHandler) GetWalletBalances(
 	if walletID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("rpc: wallet_id is required"))
 	}
-	if _, err := h.q.GetWallet(ctx, walletID); err != nil {
-		return nil, mapStoreError(err, violation{pgNoRows, "",
-			connect.CodeNotFound, "wallet not found"})
+	if _, err := h.engine.GetWallet(ctx, walletID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("rpc: wallet not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	rows, err := h.engine.WalletBalances(ctx, walletID)
 	if err != nil {
@@ -184,13 +169,7 @@ func (h *ProvisioningHandler) GetWalletBalances(
 	balances := make([]*ledgerv1.AccountBalance, 0, len(rows))
 	for _, row := range rows {
 		balances = append(balances, &ledgerv1.AccountBalance{
-			Account: accountToProto(store.Account{
-				ID:            row.ID,
-				WalletID:      row.WalletID,
-				AssetID:       row.AssetID,
-				AllowNegative: row.AllowNegative,
-				CreatedAt:     row.CreatedAt,
-			}),
+			Account: accountToProto(row.ID, row.WalletID, row.AssetID, row.AllowNegative, row.CreatedAt.Time),
 			Posted:  row.Posted.String(),
 			Pending: row.Pending.String(),
 			// Available is posted plus pending (net earmarked amounts,
@@ -204,12 +183,10 @@ func (h *ProvisioningHandler) GetWalletBalances(
 	}), nil
 }
 
-// pgNoRows marks the no-rows sentinel for mapStoreError.
-const pgNoRows = "__no_rows__"
-
 // violation maps a specific Postgres failure to a Connect error. code and
-// constraint select the error; empty code matches pgx.ErrNoRows instead.
-// An empty constraint matches any constraint with that code.
+// constraint select the error; an empty constraint matches any constraint
+// with that code. pgx.ErrNoRows is handled by the caller directly rather
+// than through this table.
 type violation struct {
 	code        string
 	constraint  string
@@ -218,14 +195,6 @@ type violation struct {
 }
 
 func mapStoreError(err error, violations ...violation) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		for _, v := range violations {
-			if v.code == pgNoRows {
-				return connect.NewError(v.connectCode, errors.New("rpc: "+v.message))
-			}
-		}
-		return connect.NewError(connect.CodeNotFound, err)
-	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		for _, v := range violations {
@@ -287,42 +256,42 @@ func holderTypeToProto(t string) ledgerv1.HolderType {
 	}
 }
 
-func assetToProto(a store.Asset) *ledgerv1.Asset {
+func assetToProto(id, code string, precision int32, metadata []byte, createdAt time.Time) *ledgerv1.Asset {
 	return &ledgerv1.Asset{
-		Id:        a.ID,
-		Code:      a.Code,
-		Precision: a.Precision,
-		Metadata:  metadataProto(a.Metadata),
-		CreatedAt: timestamppb.New(a.CreatedAt.Time),
+		Id:        id,
+		Code:      code,
+		Precision: precision,
+		Metadata:  metadataProto(metadata),
+		CreatedAt: timestamppb.New(createdAt),
 	}
 }
 
-func holderToProto(h store.Holder) *ledgerv1.Holder {
+func holderToProto(id, holderType, externalRef string, metadata []byte, createdAt time.Time) *ledgerv1.Holder {
 	return &ledgerv1.Holder{
-		Id:          h.ID,
-		Type:        holderTypeToProto(h.Type),
-		ExternalRef: h.ExternalRef,
-		Metadata:    metadataProto(h.Metadata),
-		CreatedAt:   timestamppb.New(h.CreatedAt.Time),
+		Id:          id,
+		Type:        holderTypeToProto(holderType),
+		ExternalRef: externalRef,
+		Metadata:    metadataProto(metadata),
+		CreatedAt:   timestamppb.New(createdAt),
 	}
 }
 
-func walletToProto(w store.Wallet) *ledgerv1.Wallet {
+func walletToProto(id, holderID, name string, metadata []byte, createdAt time.Time) *ledgerv1.Wallet {
 	return &ledgerv1.Wallet{
-		Id:        w.ID,
-		HolderId:  w.HolderID,
-		Name:      w.Name,
-		Metadata:  metadataProto(w.Metadata),
-		CreatedAt: timestamppb.New(w.CreatedAt.Time),
+		Id:        id,
+		HolderId:  holderID,
+		Name:      name,
+		Metadata:  metadataProto(metadata),
+		CreatedAt: timestamppb.New(createdAt),
 	}
 }
 
-func accountToProto(a store.Account) *ledgerv1.Account {
+func accountToProto(id, walletID, assetID string, allowNegative bool, createdAt time.Time) *ledgerv1.Account {
 	return &ledgerv1.Account{
-		Id:            a.ID,
-		WalletId:      a.WalletID,
-		AssetId:       a.AssetID,
-		AllowNegative: a.AllowNegative,
-		CreatedAt:     timestamppb.New(a.CreatedAt.Time),
+		Id:            id,
+		WalletId:      walletID,
+		AssetId:       assetID,
+		AllowNegative: allowNegative,
+		CreatedAt:     timestamppb.New(createdAt),
 	}
 }

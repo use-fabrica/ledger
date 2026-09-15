@@ -21,7 +21,7 @@ The double-entry participant: tracks value in exactly one asset within exactly o
 _Avoid_: wallet, sub-account
 
 **Transaction**:
-An atomic, append-only movement of value composed of two or more entries whose net effect per asset is zero. Created `pending` (funds earmarked) and later transitions to `posted` or `voided`. Carries a client-supplied idempotency key; mistakes after posting are corrected with a compensating transaction, never by editing history.
+An atomic, append-only movement of value composed of two or more entries whose net effect per asset is zero. Created either `pending` (funds earmarked, awaiting settlement) or `posted` directly when no earmark is needed — funding and transfers settle immediately, while authorize/capture integrations create pending and later transition to `posted` or `voided`. Carries a client-supplied idempotency key; mistakes after posting are corrected with a compensating transaction, never by editing history.
 _Avoid_: payment, transfer
 
 **Entry**:

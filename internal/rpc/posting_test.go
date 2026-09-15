@@ -25,7 +25,7 @@ type postingFixture struct {
 
 func newPostingFixture(t *testing.T, env *env) postingFixture {
 	t.Helper()
-	asset := createAsset(t, env, "USD")
+	asset := createAsset(t, env, "USD", 2)
 
 	systemHolder := createHolderWithType(t, env, "system-float", ledgerv1.HolderType_HOLDER_TYPE_SYSTEM)
 	systemWallet := createWallet(t, env, systemHolder.GetId(), "float")
@@ -43,48 +43,14 @@ func newPostingFixture(t *testing.T, env *env) postingFixture {
 	}
 }
 
-func createHolderWithType(t *testing.T, env *env, ref string, holderType ledgerv1.HolderType) *ledgerv1.Holder {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.CreateHolderRequest{Type: holderType, ExternalRef: ref})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	holder, err := env.provision.CreateHolder(context.Background(), req)
-	if err != nil {
-		t.Fatalf("CreateHolder(%s): %v", ref, err)
-	}
-	return holder.Msg
-}
-
-// post sends CreateTransaction with one entry per account/amount pair.
-func post(t *testing.T, env *env, key, reference string, entries ...*ledgerv1.TransactionInputEntry) (*ledgerv1.Transaction, error) {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.CreateTransactionRequest{
-		IdempotencyKey: key,
-		Reference:      stringPtr(reference),
-		Entries:        entries,
-	})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	resp, err := env.posting.CreateTransaction(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
-}
-
-func entry(accountID, amount string) *ledgerv1.TransactionInputEntry {
-	return &ledgerv1.TransactionInputEntry{AccountId: accountID, Amount: amount}
-}
-
-func stringPtr(s string) *string { return &s }
-
 // fxAccountBalance reads the materialized posted, pending, and available
 // balances of one account through the API, searching the wallets the
 // fixture created.
 func fxAccountBalance(t *testing.T, env *env, fx postingFixture, accountID string) *ledgerv1.AccountBalance {
 	t.Helper()
 	for _, walletID := range fx.wallets {
-		req := connect.NewRequest(&ledgerv1.GetWalletBalancesRequest{WalletId: walletID})
-		req.Header().Set("X-Api-Key", testAPIKey)
-		resp, err := env.provision.GetWalletBalances(context.Background(), req)
+		resp, err := env.provision.GetWalletBalances(context.Background(), authed(t,
+			connect.NewRequest(&ledgerv1.GetWalletBalancesRequest{WalletId: walletID})))
 		if err != nil {
 			t.Fatalf("GetWalletBalances(%s): %v", walletID, err)
 		}
@@ -128,47 +94,6 @@ func assertAmount(t *testing.T, column, accountID, got, want string) {
 	if !gd.Equal(wd) {
 		t.Fatalf("%s balance of %s = %s, want %s", column, accountID, got, want)
 	}
-}
-
-// createPending sends CreatePendingTransaction with one entry per
-// account/amount pair.
-func createPending(t *testing.T, env *env, key, reference string, entries ...*ledgerv1.TransactionInputEntry) (*ledgerv1.Transaction, error) {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.CreatePendingTransactionRequest{
-		IdempotencyKey: key,
-		Reference:      stringPtr(reference),
-		Entries:        entries,
-	})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	resp, err := env.posting.CreatePendingTransaction(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
-}
-
-// postPending settles a pending transaction via PostTransaction.
-func postPending(t *testing.T, env *env, id string) (*ledgerv1.Transaction, error) {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.PostTransactionRequest{Id: id})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	resp, err := env.posting.PostTransaction(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
-}
-
-// voidPending releases a pending transaction via VoidTransaction.
-func voidPending(t *testing.T, env *env, id string) (*ledgerv1.Transaction, error) {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.VoidTransactionRequest{Id: id})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	resp, err := env.posting.VoidTransaction(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
 }
 
 // TestFundingFromSystemAccount: value enters via a system account that may
@@ -241,14 +166,11 @@ func TestNonZeroSumRejectedWithNothingWritten(t *testing.T) {
 	env := setup(t)
 	fx := newPostingFixture(t, env)
 
-	if _, err := post(t, env, "bad-sum", "",
+	_, err := post(t, env, "bad-sum", "",
 		entry(fx.system.GetId(), "-100.00"),
 		entry(fx.user.GetId(), "99.99"),
-	); err == nil {
-		t.Fatal("non-zero-sum transaction: expected error")
-	} else {
-		assertCode(t, err, connect.CodeInvalidArgument)
-	}
+	)
+	assertCode(t, err, connect.CodeInvalidArgument)
 
 	assertBalance(t, env, fx, fx.user.GetId(), "0")
 	assertBalance(t, env, fx, fx.system.GetId(), "0")
@@ -392,14 +314,13 @@ func TestPostingValidationErrors(t *testing.T) {
 	fx := newPostingFixture(t, env)
 
 	t.Run("missing idempotency key", func(t *testing.T) {
-		req := connect.NewRequest(&ledgerv1.CreateTransactionRequest{
-			Entries: []*ledgerv1.TransactionInputEntry{
-				entry(fx.system.GetId(), "-1.00"),
-				entry(fx.user.GetId(), "1.00"),
-			},
-		})
-		req.Header().Set("X-Api-Key", testAPIKey)
-		_, err := env.posting.CreateTransaction(context.Background(), req)
+		_, err := env.posting.CreateTransaction(context.Background(), authed(t,
+			connect.NewRequest(&ledgerv1.CreateTransactionRequest{
+				Entries: []*ledgerv1.TransactionInputEntry{
+					entry(fx.system.GetId(), "-1.00"),
+					entry(fx.user.GetId(), "1.00"),
+				},
+			})))
 		assertCode(t, err, connect.CodeInvalidArgument)
 	})
 
@@ -446,21 +367,8 @@ func TestPostingValidationErrors(t *testing.T) {
 func TestGetTransactionUnknownID(t *testing.T) {
 	env := setup(t)
 
-	req := connect.NewRequest(&ledgerv1.GetTransactionRequest{Id: "018f4d9a-7b6c-7000-8000-000000000000"})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	_, err := env.posting.GetTransaction(context.Background(), req)
+	_, err := getTransaction(t, env, "018f4d9a-7b6c-7000-8000-000000000000")
 	assertCode(t, err, connect.CodeNotFound)
-}
-
-func getTransaction(t *testing.T, env *env, id string) (*ledgerv1.Transaction, error) {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.GetTransactionRequest{Id: id})
-	req.Header().Set("X-Api-Key", testAPIKey)
-	resp, err := env.posting.GetTransaction(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
 }
 
 // TestPendingCreationEarmarksOnly: creating a pending transaction moves
@@ -645,9 +553,10 @@ func TestPendingOverdrawAvailableRejected(t *testing.T) {
 	assertBalances(t, env, fx, fx.user.GetId(), "100.00", "-100.00", "0")
 }
 
-// TestTerminalStatesFinal: posting or voiding an already-posted or
-// voided transaction is rejected with failed_precondition and moves
-// nothing — retries after a timeout are safe.
+// TestTerminalStatesFinal: repeating a transition that already reached
+// its terminal state is a safe retry — it returns the transaction and
+// moves nothing — while the opposite transition on a terminal transaction
+// is rejected with failed_precondition.
 func TestTerminalStatesFinal(t *testing.T) {
 	env := setup(t)
 	fx := newPostingFixture(t, env)
@@ -659,7 +568,8 @@ func TestTerminalStatesFinal(t *testing.T) {
 		t.Fatalf("fund: %v", err)
 	}
 
-	// Settle path: post, then every further transition is rejected.
+	// Settle path: post, then re-posting is a safe retry and voiding is
+	// rejected.
 	pending, err := createPending(t, env, "hold-a", "",
 		entry(fx.user.GetId(), "-30.00"),
 		entry(fx.system.GetId(), "30.00"),
@@ -672,10 +582,12 @@ func TestTerminalStatesFinal(t *testing.T) {
 		t.Fatalf("PostTransaction: %v", err)
 	}
 
-	if _, err := postPending(t, env, pending.GetId()); err == nil {
-		t.Fatal("re-posting a posted transaction: expected error")
-	} else {
-		assertCode(t, err, connect.CodeFailedPrecondition)
+	replay, err := postPending(t, env, pending.GetId())
+	if err != nil {
+		t.Fatalf("re-posting a posted transaction: expected safe retry, got %v", err)
+	}
+	if replay.GetId() != settled.GetId() || replay.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED {
+		t.Fatalf("re-post returned id %s status %v, want original %s posted", replay.GetId(), replay.GetStatus(), settled.GetId())
 	}
 	if _, err := voidPending(t, env, pending.GetId()); err == nil {
 		t.Fatal("voiding a posted transaction: expected error")
@@ -688,14 +600,15 @@ func TestTerminalStatesFinal(t *testing.T) {
 		t.Fatalf("GetTransaction: %v", err)
 	}
 	if got.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED {
-		t.Fatalf("status after rejected transitions = %v, want POSTED", got.GetStatus())
+		t.Fatalf("status after replay and rejected void = %v, want POSTED", got.GetStatus())
 	}
 	if !got.GetPostedAt().AsTime().Equal(settled.GetPostedAt().AsTime()) {
-		t.Fatal("posted_at changed after rejected re-post")
+		t.Fatal("posted_at changed after re-post")
 	}
 	assertBalances(t, env, fx, fx.user.GetId(), "70.00", "0", "70.00")
 
-	// Void path: void, then every further transition is rejected.
+	// Void path: void, then re-voiding is a safe retry and posting is
+	// rejected.
 	released, err := createPending(t, env, "hold-b", "",
 		entry(fx.user.GetId(), "-20.00"),
 		entry(fx.system.GetId(), "20.00"),
@@ -708,10 +621,12 @@ func TestTerminalStatesFinal(t *testing.T) {
 		t.Fatalf("VoidTransaction: %v", err)
 	}
 
-	if _, err := voidPending(t, env, released.GetId()); err == nil {
-		t.Fatal("re-voiding a voided transaction: expected error")
-	} else {
-		assertCode(t, err, connect.CodeFailedPrecondition)
+	revoid, err := voidPending(t, env, released.GetId())
+	if err != nil {
+		t.Fatalf("re-voiding a voided transaction: expected safe retry, got %v", err)
+	}
+	if revoid.GetId() != voided.GetId() || revoid.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED {
+		t.Fatalf("re-void returned id %s status %v, want original %s voided", revoid.GetId(), revoid.GetStatus(), voided.GetId())
 	}
 	if _, err := postPending(t, env, released.GetId()); err == nil {
 		t.Fatal("posting a voided transaction: expected error")
@@ -724,25 +639,19 @@ func TestTerminalStatesFinal(t *testing.T) {
 		t.Fatalf("GetTransaction: %v", err)
 	}
 	if got.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED {
-		t.Fatalf("status after rejected transitions = %v, want VOIDED", got.GetStatus())
+		t.Fatalf("status after replay and rejected post = %v, want VOIDED", got.GetStatus())
 	}
 	if !got.GetVoidedAt().AsTime().Equal(voided.GetVoidedAt().AsTime()) {
-		t.Fatal("voided_at changed after rejected re-void")
+		t.Fatal("voided_at changed after re-void")
 	}
 	assertBalances(t, env, fx, fx.user.GetId(), "70.00", "0", "70.00")
 	assertBalances(t, env, fx, fx.system.GetId(), "-70.00", "0", "-70.00")
 
 	// Unknown transactions are not_found on both transitions.
-	if _, err := postPending(t, env, "018f4d9a-7b6c-7000-8000-000000000000"); err == nil {
-		t.Fatal("posting an unknown transaction: expected error")
-	} else {
-		assertCode(t, err, connect.CodeNotFound)
-	}
-	if _, err := voidPending(t, env, "018f4d9a-7b6c-7000-8000-000000000000"); err == nil {
-		t.Fatal("voiding an unknown transaction: expected error")
-	} else {
-		assertCode(t, err, connect.CodeNotFound)
-	}
+	_, err = postPending(t, env, "018f4d9a-7b6c-7000-8000-000000000000")
+	assertCode(t, err, connect.CodeNotFound)
+	_, err = voidPending(t, env, "018f4d9a-7b6c-7000-8000-000000000000")
+	assertCode(t, err, connect.CodeNotFound)
 }
 
 // TestIdempotentReplayPendingCreate: retrying a pending creation with the

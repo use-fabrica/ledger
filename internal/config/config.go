@@ -21,22 +21,36 @@ type Config struct {
 	APIKey string
 }
 
-// Load reads configuration from the environment, applying defaults where
-// a variable is unset.
+// Load reads the full runtime configuration from the environment,
+// applying defaults where a variable is unset. It requires every server
+// secret, including LEDGER_API_KEY; binaries that need no secrets (like
+// cmd/migrate) use LoadBase instead.
 func Load() (Config, error) {
+	cfg, err := LoadBase()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.APIKey = os.Getenv("LEDGER_API_KEY")
+	if cfg.APIKey == "" {
+		return Config{}, fmt.Errorf("config: LEDGER_API_KEY is required")
+	}
+	return cfg, nil
+}
+
+// LoadBase reads the configuration every binary needs — the database URL
+// and the HTTP listen address — without requiring server-only secrets.
+// The migrate deploy step runs with no API key in scope, so it loads
+// through here rather than Load.
+func LoadBase() (Config, error) {
 	cfg := Config{
 		DatabaseURL: os.Getenv("LEDGER_DATABASE_URL"),
 		HTTPAddr:    os.Getenv("LEDGER_HTTP_ADDR"),
-		APIKey:      os.Getenv("LEDGER_API_KEY"),
 	}
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = ":8080"
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: LEDGER_DATABASE_URL is required")
-	}
-	if cfg.APIKey == "" {
-		return Config{}, fmt.Errorf("config: LEDGER_API_KEY is required")
 	}
 	return cfg, nil
 }

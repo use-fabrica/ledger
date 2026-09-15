@@ -1,229 +1,60 @@
 package rpc_test
 
-// Self-contained test environment for ticket #6: it duplicates the
-// testcontainers setup from provisioning_test.go under its own names so
-// the shared test files (owned by ticket #5) can evolve without breaking
-// these tests. All fixture helpers are prefixed audit* for the same
-// reason.
-
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/shopspring/decimal"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/use-fabrica/ledger/db/migrations"
-	"github.com/use-fabrica/ledger/internal/ledger"
-	"github.com/use-fabrica/ledger/internal/rpc"
 	ledgerv1 "github.com/use-fabrica/ledger/proto/ledger/v1"
-	ledgerv1connect "github.com/use-fabrica/ledger/proto/ledger/v1/ledgerv1connect"
 )
 
-const auditAPIKey = "test-ledger-key"
-
-// auditEnv boots a real Postgres from the embedded goose migrations and
-// serves every Connect handler over httptest — the same mux wiring as
-// cmd/ledger, including the auth interceptor on the private services.
-type auditEnv struct {
-	provision ledgerv1connect.ProvisioningServiceClient
-	posting   ledgerv1connect.PostingServiceClient
-	audit     ledgerv1connect.AuditServiceClient
-	pool      *pgxpool.Pool
-}
-
-func setupAudit(t *testing.T) *auditEnv {
-	t.Helper()
-	ctx := context.Background()
-
-	container, err := postgres.Run(ctx, "postgres:16",
-		postgres.WithDatabase("ledger"),
-		postgres.WithUsername("ledger"),
-		postgres.WithPassword("ledger"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").WithOccurrence(2),
-		),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
-
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("container connection string: %v", err)
-	}
-
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatalf("goose dialect: %v", err)
-	}
-	migDB, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("open migration db: %v", err)
-	}
-	if err := goose.Up(migDB, "."); err != nil {
-		t.Fatalf("goose up: %v", err)
-	}
-	_ = migDB.Close()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgx pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	engine := ledger.New(pool)
-	mux := http.NewServeMux()
-	mux.Handle(ledgerv1connect.NewProvisioningServiceHandler(
-		rpc.NewProvisioningHandler(pool, engine),
-		connect.WithInterceptors(rpc.NewAuthInterceptor(auditAPIKey)),
-	))
-	mux.Handle(ledgerv1connect.NewPostingServiceHandler(
-		rpc.NewPostingHandler(engine),
-		connect.WithInterceptors(rpc.NewAuthInterceptor(auditAPIKey)),
-	))
-	mux.Handle(ledgerv1connect.NewAuditServiceHandler(
-		rpc.NewAuditHandler(engine),
-		connect.WithInterceptors(rpc.NewAuthInterceptor(auditAPIKey)),
-	))
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	return &auditEnv{
-		provision: ledgerv1connect.NewProvisioningServiceClient(http.DefaultClient, server.URL),
-		posting:   ledgerv1connect.NewPostingServiceClient(http.DefaultClient, server.URL),
-		audit:     ledgerv1connect.NewAuditServiceClient(http.DefaultClient, server.URL),
-		pool:      pool,
-	}
-}
-
-func auditAuthed[T any](t *testing.T, req *connect.Request[T]) *connect.Request[T] {
-	t.Helper()
-	req.Header().Set("X-Api-Key", auditAPIKey)
-	return req
-}
-
-func auditAsset(t *testing.T, env *auditEnv, code string, precision int32) *ledgerv1.Asset {
-	t.Helper()
-	res, err := env.provision.CreateAsset(context.Background(), auditAuthed(t,
-		connect.NewRequest(&ledgerv1.CreateAssetRequest{Code: code, Precision: precision})))
-	if err != nil {
-		t.Fatalf("CreateAsset(%s): %v", code, err)
-	}
-	return res.Msg
-}
-
-func auditHolder(t *testing.T, env *auditEnv, ref string, holderType ledgerv1.HolderType) *ledgerv1.Holder {
-	t.Helper()
-	res, err := env.provision.CreateHolder(context.Background(), auditAuthed(t,
-		connect.NewRequest(&ledgerv1.CreateHolderRequest{Type: holderType, ExternalRef: ref})))
-	if err != nil {
-		t.Fatalf("CreateHolder(%s): %v", ref, err)
-	}
-	return res.Msg
-}
-
-func auditWallet(t *testing.T, env *auditEnv, holderID, name string) *ledgerv1.Wallet {
-	t.Helper()
-	res, err := env.provision.CreateWallet(context.Background(), auditAuthed(t,
-		connect.NewRequest(&ledgerv1.CreateWalletRequest{HolderId: holderID, Name: name})))
-	if err != nil {
-		t.Fatalf("CreateWallet(%s): %v", name, err)
-	}
-	return res.Msg
-}
-
-func auditAccount(t *testing.T, env *auditEnv, walletID, assetID string, allowNegative bool) *ledgerv1.Account {
-	t.Helper()
-	res, err := env.provision.CreateAccount(context.Background(), auditAuthed(t,
-		connect.NewRequest(&ledgerv1.CreateAccountRequest{
-			WalletId: walletID, AssetId: assetID, AllowNegative: &allowNegative,
-		})))
-	if err != nil {
-		t.Fatalf("CreateAccount(%s): %v", walletID, err)
-	}
-	return res.Msg
-}
-
-// auditAssertCode fails unless err is a Connect error with the wanted
-// code. Local rather than the shared assertCode helper: these tests must
-// not depend on files other tickets own.
-func auditAssertCode(t *testing.T, err error, want connect.Code) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected Connect code %s, got nil error", want)
-	}
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		t.Fatalf("error is not a Connect error: %v", err)
-	}
-	if connectErr.Code() != want {
-		t.Fatalf("Connect code = %s, want %s (error: %v)", connectErr.Code(), want, err)
-	}
-}
-
-// auditPost sends CreateTransaction and fails the test on error.
-func auditPost(t *testing.T, env *auditEnv, key, reference string, entries ...*ledgerv1.TransactionInputEntry) *ledgerv1.Transaction {
-	t.Helper()
-	req := connect.NewRequest(&ledgerv1.CreateTransactionRequest{
-		IdempotencyKey: key,
-		Entries:        entries,
-	})
-	if reference != "" {
-		req.Msg.Reference = &reference
-	}
-	res, err := env.posting.CreateTransaction(context.Background(), auditAuthed(t, req))
-	if err != nil {
-		t.Fatalf("CreateTransaction(%s): %v", key, err)
-	}
-	return res.Msg
-}
-
-func auditEntry(accountID, amount string) *ledgerv1.TransactionInputEntry {
-	return &ledgerv1.TransactionInputEntry{AccountId: accountID, Amount: amount}
-}
-
-// auditFundedWallet is the standard fixture: one asset, a system account
-// flagged allow_negative, and one user wallet/account starting at zero.
-type auditFundedWallet struct {
+// fundedWallet is the standard audit fixture: one asset, a system account
+// flagged allow_negative, and one user wallet/account funded with 100.00.
+type fundedWallet struct {
 	systemAccount *ledgerv1.Account
 	userWallet    *ledgerv1.Wallet
 	userAccount   *ledgerv1.Account
 }
 
-func newAuditFundedWallet(t *testing.T, env *auditEnv) auditFundedWallet {
+func newFundedWallet(t *testing.T, env *env) fundedWallet {
 	t.Helper()
-	asset := auditAsset(t, env, "USD", 2)
+	asset := createAsset(t, env, "USD", 2)
 
-	system := auditHolder(t, env, "audit-system", ledgerv1.HolderType_HOLDER_TYPE_SYSTEM)
-	systemWallet := auditWallet(t, env, system.GetId(), "system ops")
-	systemAccount := auditAccount(t, env, systemWallet.GetId(), asset.GetId(), true)
+	system := createHolderWithType(t, env, "audit-system", ledgerv1.HolderType_HOLDER_TYPE_SYSTEM)
+	systemWallet := createWallet(t, env, system.GetId(), "system ops")
+	systemAccount := createAccount(t, env, systemWallet.GetId(), asset.GetId(), true)
 
-	user := auditHolder(t, env, "audit-user", ledgerv1.HolderType_HOLDER_TYPE_USER)
-	userWallet := auditWallet(t, env, user.GetId(), "user wallet")
-	userAccount := auditAccount(t, env, userWallet.GetId(), asset.GetId(), false)
+	user := createHolder(t, env, "audit-user")
+	userWallet := createWallet(t, env, user.GetId(), "user wallet")
+	userAccount := createAccount(t, env, userWallet.GetId(), asset.GetId(), false)
 
-	auditPost(t, env, "audit-fund-1", "stripe-charge-fund",
-		auditEntry(systemAccount.GetId(), "-100.00"),
-		auditEntry(userAccount.GetId(), "100.00"))
+	mustPost(t, env, "audit-fund-1", "stripe-charge-fund",
+		entry(systemAccount.GetId(), "-100.00"),
+		entry(userAccount.GetId(), "100.00"))
 
-	return auditFundedWallet{
+	return fundedWallet{
 		systemAccount: systemAccount,
 		userWallet:    userWallet,
 		userAccount:   userAccount,
 	}
+}
+
+// listWalletTransactions lists one wallet's transactions, optionally
+// filtered by status (nil = every status).
+func listWalletTransactions(t *testing.T, env *env, walletID string, status *ledgerv1.TransactionStatus) *ledgerv1.ListWalletTransactionsResponse {
+	t.Helper()
+	req := connect.NewRequest(&ledgerv1.ListWalletTransactionsRequest{WalletId: walletID})
+	if status != nil {
+		req.Msg.Status = status
+	}
+	res, err := env.audit.ListWalletTransactions(context.Background(), authed(t, req))
+	if err != nil {
+		t.Fatalf("ListWalletTransactions(%s): %v", walletID, err)
+	}
+	return res.Msg
 }
 
 // TestListEntriesChronologicalWithRunningTotals: the entry history of an
@@ -231,17 +62,17 @@ func newAuditFundedWallet(t *testing.T, env *auditEnv) auditFundedWallet {
 // amounts reconstructs the posted balance — the audit trail and the
 // materialized balance agree by construction.
 func TestListEntriesChronologicalWithRunningTotals(t *testing.T) {
-	env := setupAudit(t)
-	fx := newAuditFundedWallet(t, env)
+	env := setup(t)
+	fx := newFundedWallet(t, env)
 
-	auditPost(t, env, "audit-pay-1", "stripe-charge-1",
-		auditEntry(fx.userAccount.GetId(), "-30.00"),
-		auditEntry(fx.systemAccount.GetId(), "30.00"))
-	auditPost(t, env, "audit-pay-2", "stripe-charge-2",
-		auditEntry(fx.userAccount.GetId(), "-12.50"),
-		auditEntry(fx.systemAccount.GetId(), "12.50"))
+	mustPost(t, env, "audit-pay-1", "stripe-charge-1",
+		entry(fx.userAccount.GetId(), "-30.00"),
+		entry(fx.systemAccount.GetId(), "30.00"))
+	mustPost(t, env, "audit-pay-2", "stripe-charge-2",
+		entry(fx.userAccount.GetId(), "-12.50"),
+		entry(fx.systemAccount.GetId(), "12.50"))
 
-	res, err := env.audit.ListEntries(context.Background(), auditAuthed(t,
+	res, err := env.audit.ListEntries(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.ListEntriesRequest{AccountId: fx.userAccount.GetId()})))
 	if err != nil {
 		t.Fatalf("ListEntries: %v", err)
@@ -279,7 +110,7 @@ func TestListEntriesChronologicalWithRunningTotals(t *testing.T) {
 	}
 
 	// The accumulated total must equal the materialized posted balance.
-	balances, err := env.provision.GetWalletBalances(context.Background(), auditAuthed(t,
+	balances, err := env.provision.GetWalletBalances(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetWalletBalancesRequest{WalletId: fx.userWallet.GetId()})))
 	if err != nil {
 		t.Fatalf("GetWalletBalances: %v", err)
@@ -294,43 +125,38 @@ func TestListEntriesChronologicalWithRunningTotals(t *testing.T) {
 }
 
 // TestListWalletTransactionsReturnsAllTouchingTransactions: a wallet's
-// transaction history contains every posted transaction that touches any
-// of its accounts — including a multi-asset transaction that hits two
-// accounts of the same wallet, which must appear exactly once.
+// transaction history contains every transaction that touches any of its
+// accounts — including a multi-asset transaction that hits two accounts of
+// the same wallet, which must appear exactly once.
 func TestListWalletTransactionsReturnsAllTouchingTransactions(t *testing.T) {
-	env := setupAudit(t)
-	fx := newAuditFundedWallet(t, env) // funds user account with 100.00
+	env := setup(t)
+	fx := newFundedWallet(t, env) // funds user account with 100.00
 
 	// A second user wallet with an account, never party to any
 	// transaction.
-	other := auditHolder(t, env, "audit-other", ledgerv1.HolderType_HOLDER_TYPE_USER)
-	otherWallet := auditWallet(t, env, other.GetId(), "other wallet")
-	otherAsset := auditAsset(t, env, "EUR", 2)
-	auditAccount(t, env, otherWallet.GetId(), otherAsset.GetId(), false)
+	other := createHolder(t, env, "audit-other")
+	otherWallet := createWallet(t, env, other.GetId(), "other wallet")
+	otherAsset := createAsset(t, env, "EUR", 2)
+	createAccount(t, env, otherWallet.GetId(), otherAsset.GetId(), false)
 
 	// Moves value out of the user wallet to the other wallet...
-	auditPost(t, env, "audit-xfer-out", "stripe-charge-out",
-		auditEntry(fx.userAccount.GetId(), "-30.00"),
-		auditEntry(fx.systemAccount.GetId(), "30.00"))
+	mustPost(t, env, "audit-xfer-out", "stripe-charge-out",
+		entry(fx.userAccount.GetId(), "-30.00"),
+		entry(fx.systemAccount.GetId(), "30.00"))
 	// ...and a multi-asset transaction touching TWO accounts of the user
 	// wallet (USD debit + EUR credit through the system accounts). The
 	// user wallet must list it once, not twice.
-	userEUR := auditAccount(t, env, fx.userWallet.GetId(), otherAsset.GetId(), false)
-	systemEUR := auditAccount(t, env, auditWallet(t, env,
-		auditHolder(t, env, "audit-system-2", ledgerv1.HolderType_HOLDER_TYPE_SYSTEM).GetId(),
+	userEUR := createAccount(t, env, fx.userWallet.GetId(), otherAsset.GetId(), false)
+	systemEUR := createAccount(t, env, createWallet(t, env,
+		createHolderWithType(t, env, "audit-system-2", ledgerv1.HolderType_HOLDER_TYPE_SYSTEM).GetId(),
 		"system ops 2").GetId(), otherAsset.GetId(), true)
-	auditPost(t, env, "audit-multi-asset", "stripe-charge-multi",
-		auditEntry(fx.userAccount.GetId(), "-10.00"),
-		auditEntry(fx.systemAccount.GetId(), "10.00"),
-		auditEntry(systemEUR.GetId(), "-20.00"),
-		auditEntry(userEUR.GetId(), "20.00"))
+	mustPost(t, env, "audit-multi-asset", "stripe-charge-multi",
+		entry(fx.userAccount.GetId(), "-10.00"),
+		entry(fx.systemAccount.GetId(), "10.00"),
+		entry(systemEUR.GetId(), "-20.00"),
+		entry(userEUR.GetId(), "20.00"))
 
-	res, err := env.audit.ListWalletTransactions(context.Background(), auditAuthed(t,
-		connect.NewRequest(&ledgerv1.ListWalletTransactionsRequest{WalletId: fx.userWallet.GetId()})))
-	if err != nil {
-		t.Fatalf("ListWalletTransactions: %v", err)
-	}
-	transactions := res.Msg.GetTransactions()
+	transactions := listWalletTransactions(t, env, fx.userWallet.GetId(), nil).GetTransactions()
 
 	// Expected: the funding credit, the debit, and the multi-asset
 	// transaction — exactly 3, with the multi-asset one deduplicated.
@@ -360,33 +186,110 @@ func TestListWalletTransactionsReturnsAllTouchingTransactions(t *testing.T) {
 
 	// The other wallet's history contains none of the user wallet's
 	// transactions: it was never party to any.
-	otherRes, err := env.audit.ListWalletTransactions(context.Background(), auditAuthed(t,
-		connect.NewRequest(&ledgerv1.ListWalletTransactionsRequest{WalletId: otherWallet.GetId()})))
+	if got := listWalletTransactions(t, env, otherWallet.GetId(), nil).GetTransactions(); len(got) != 0 {
+		t.Fatalf("other wallet: expected 0 transactions, got %d", len(got))
+	}
+}
+
+// TestListWalletTransactionsStatusFilter: without a status the listing
+// returns transactions of every status — posted, pending, and voided —
+// and with one it returns exactly that status, so reconciliation can see
+// the complete journal or zoom into one slice of it.
+func TestListWalletTransactionsStatusFilter(t *testing.T) {
+	env := setup(t)
+	fx := newFundedWallet(t, env) // one posted transaction (audit-fund-1)
+
+	pending, err := createPending(t, env, "audit-hold-1", "auth-1",
+		entry(fx.userAccount.GetId(), "-10.00"),
+		entry(fx.systemAccount.GetId(), "10.00"))
 	if err != nil {
-		t.Fatalf("ListWalletTransactions(other): %v", err)
+		t.Fatalf("CreatePendingTransaction: %v", err)
 	}
-	if len(otherRes.Msg.GetTransactions()) != 0 {
-		t.Fatalf("other wallet: expected 0 transactions, got %d", len(otherRes.Msg.GetTransactions()))
+	if pending.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING {
+		t.Fatalf("status = %v, want PENDING", pending.GetStatus())
 	}
+
+	voidSource, err := createPending(t, env, "audit-hold-2", "auth-2",
+		entry(fx.userAccount.GetId(), "-5.00"),
+		entry(fx.systemAccount.GetId(), "5.00"))
+	if err != nil {
+		t.Fatalf("CreatePendingTransaction: %v", err)
+	}
+	voided, err := voidPending(t, env, voidSource.GetId())
+	if err != nil {
+		t.Fatalf("VoidTransaction: %v", err)
+	}
+	if voided.GetStatus() != ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED {
+		t.Fatalf("status = %v, want VOIDED", voided.GetStatus())
+	}
+
+	postedStatus := ledgerv1.TransactionStatus_TRANSACTION_STATUS_POSTED
+	pendingStatus := ledgerv1.TransactionStatus_TRANSACTION_STATUS_PENDING
+	voidedStatus := ledgerv1.TransactionStatus_TRANSACTION_STATUS_VOIDED
+
+	// Unset lists every status.
+	all := listWalletTransactions(t, env, fx.userWallet.GetId(), nil).GetTransactions()
+	if len(all) != 3 {
+		t.Fatalf("unfiltered listing: got %d transactions, want 3", len(all))
+	}
+	seen := make(map[ledgerv1.TransactionStatus]int, len(all))
+	for _, transaction := range all {
+		seen[transaction.GetStatus()]++
+	}
+	for _, want := range []ledgerv1.TransactionStatus{postedStatus, pendingStatus, voidedStatus} {
+		if seen[want] != 1 {
+			t.Fatalf("status %s appears %d times in unfiltered listing, want 1", want, seen[want])
+		}
+	}
+
+	// Each exact filter returns only its slice.
+	posted := listWalletTransactions(t, env, fx.userWallet.GetId(), &postedStatus).GetTransactions()
+	if len(posted) != 1 || posted[0].GetIdempotencyKey() != "audit-fund-1" {
+		t.Fatalf("posted filter: got %v, want only audit-fund-1", keysOf(posted))
+	}
+	pendings := listWalletTransactions(t, env, fx.userWallet.GetId(), &pendingStatus).GetTransactions()
+	if len(pendings) != 1 || pendings[0].GetIdempotencyKey() != "audit-hold-1" {
+		t.Fatalf("pending filter: got %v, want only audit-hold-1", keysOf(pendings))
+	}
+	voideds := listWalletTransactions(t, env, fx.userWallet.GetId(), &voidedStatus).GetTransactions()
+	if len(voideds) != 1 || voideds[0].GetIdempotencyKey() != "audit-hold-2" {
+		t.Fatalf("voided filter: got %v, want only audit-hold-2", keysOf(voideds))
+	}
+
+	// An explicit unspecified status is a caller bug, not a wildcard.
+	bad := connect.NewRequest(&ledgerv1.ListWalletTransactionsRequest{
+		WalletId: fx.userWallet.GetId(),
+		Status:   ledgerv1.TransactionStatus_TRANSACTION_STATUS_UNSPECIFIED.Enum(),
+	})
+	_, err = env.audit.ListWalletTransactions(context.Background(), authed(t, bad))
+	assertCode(t, err, connect.CodeInvalidArgument)
+}
+
+func keysOf(transactions []*ledgerv1.Transaction) []string {
+	keys := make([]string, 0, len(transactions))
+	for _, transaction := range transactions {
+		keys = append(keys, transaction.GetIdempotencyKey())
+	}
+	return keys
 }
 
 // TestGetTransactionByIdempotencyKeyAndReference: both lookups return the
 // exact transaction (id, key, reference, entries), and unknown keys map
 // to a clear not-found.
 func TestGetTransactionByIdempotencyKeyAndReference(t *testing.T) {
-	env := setupAudit(t)
-	fx := newAuditFundedWallet(t, env)
+	env := setup(t)
+	fx := newFundedWallet(t, env)
 
-	original := auditPost(t, env, "audit-lookup-1", "stripe-charge-lookup",
-		auditEntry(fx.systemAccount.GetId(), "-5.00"),
-		auditEntry(fx.userAccount.GetId(), "5.00"))
+	original := mustPost(t, env, "audit-lookup-1", "stripe-charge-lookup",
+		entry(fx.systemAccount.GetId(), "-5.00"),
+		entry(fx.userAccount.GetId(), "5.00"))
 
-	byKey, err := env.audit.GetTransactionByIdempotencyKey(context.Background(), auditAuthed(t,
+	byKey, err := env.audit.GetTransactionByIdempotencyKey(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetTransactionByIdempotencyKeyRequest{IdempotencyKey: "audit-lookup-1"})))
 	if err != nil {
 		t.Fatalf("GetTransactionByIdempotencyKey: %v", err)
 	}
-	byRef, err := env.audit.GetTransactionByReference(context.Background(), auditAuthed(t,
+	byRef, err := env.audit.GetTransactionByReference(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetTransactionByReferenceRequest{Reference: "stripe-charge-lookup"})))
 	if err != nil {
 		t.Fatalf("GetTransactionByReference: %v", err)
@@ -413,41 +316,41 @@ func TestGetTransactionByIdempotencyKeyAndReference(t *testing.T) {
 	}
 
 	// Unknown keys and references are clear not-founds.
-	_, err = env.audit.GetTransactionByIdempotencyKey(context.Background(), auditAuthed(t,
+	_, err = env.audit.GetTransactionByIdempotencyKey(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetTransactionByIdempotencyKeyRequest{IdempotencyKey: "never-used"})))
-	auditAssertCode(t, err, connect.CodeNotFound)
+	assertCode(t, err, connect.CodeNotFound)
 
-	_, err = env.audit.GetTransactionByReference(context.Background(), auditAuthed(t,
+	_, err = env.audit.GetTransactionByReference(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetTransactionByReferenceRequest{Reference: "stripe-charge-nope"})))
-	auditAssertCode(t, err, connect.CodeNotFound)
+	assertCode(t, err, connect.CodeNotFound)
 }
 
 // TestAuditLookupsRequireKeys: empty lookup keys are invalid_argument,
 // and listing an unknown account or wallet is not_found.
 func TestAuditLookupsRequireKeys(t *testing.T) {
-	env := setupAudit(t)
-	fx := newAuditFundedWallet(t, env)
+	env := setup(t)
+	fx := newFundedWallet(t, env)
 
-	_, err := env.audit.GetTransactionByIdempotencyKey(context.Background(), auditAuthed(t,
+	_, err := env.audit.GetTransactionByIdempotencyKey(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetTransactionByIdempotencyKeyRequest{})))
-	auditAssertCode(t, err, connect.CodeInvalidArgument)
+	assertCode(t, err, connect.CodeInvalidArgument)
 
-	_, err = env.audit.GetTransactionByReference(context.Background(), auditAuthed(t,
+	_, err = env.audit.GetTransactionByReference(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.GetTransactionByReferenceRequest{})))
-	auditAssertCode(t, err, connect.CodeInvalidArgument)
+	assertCode(t, err, connect.CodeInvalidArgument)
 
-	_, err = env.audit.ListEntries(context.Background(), auditAuthed(t,
+	_, err = env.audit.ListEntries(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.ListEntriesRequest{AccountId: "no-such-account"})))
-	auditAssertCode(t, err, connect.CodeNotFound)
+	assertCode(t, err, connect.CodeNotFound)
 
-	_, err = env.audit.ListWalletTransactions(context.Background(), auditAuthed(t,
+	_, err = env.audit.ListWalletTransactions(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.ListWalletTransactionsRequest{WalletId: "no-such-wallet"})))
-	auditAssertCode(t, err, connect.CodeNotFound)
+	assertCode(t, err, connect.CodeNotFound)
 
 	// Existing accounts page normally: the fixture's user account has
 	// exactly one movement (the funding credit), so a page of size 1 is
 	// also the last page.
-	res, err := env.audit.ListEntries(context.Background(), auditAuthed(t,
+	res, err := env.audit.ListEntries(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.ListEntriesRequest{AccountId: fx.userAccount.GetId(), PageSize: 1})))
 	if err != nil {
 		t.Fatalf("ListEntries(existing account): %v", err)
@@ -461,9 +364,9 @@ func TestAuditLookupsRequireKeys(t *testing.T) {
 
 	// An existing account with no movements at all is a valid empty page,
 	// not an error.
-	asset := auditAsset(t, env, "JPY", 0)
-	unused := auditAccount(t, env, fx.userWallet.GetId(), asset.GetId(), false)
-	empty, err := env.audit.ListEntries(context.Background(), auditAuthed(t,
+	asset := createAsset(t, env, "JPY", 0)
+	unused := createAccount(t, env, fx.userWallet.GetId(), asset.GetId(), false)
+	empty, err := env.audit.ListEntries(context.Background(), authed(t,
 		connect.NewRequest(&ledgerv1.ListEntriesRequest{AccountId: unused.GetId()})))
 	if err != nil {
 		t.Fatalf("ListEntries(unused account): %v", err)
@@ -479,20 +382,20 @@ func TestAuditLookupsRequireKeys(t *testing.T) {
 // chronological order, with next_page_offset present on every page but
 // the last.
 func TestListEntriesPagination(t *testing.T) {
-	env := setupAudit(t)
-	fx := newAuditFundedWallet(t, env)
+	env := setup(t)
+	fx := newFundedWallet(t, env)
 
 	// 5 entries total on the user account.
 	for i, amount := range []string{"-1.00", "-2.00", "-3.00", "-4.00"} {
-		auditPost(t, env, fmt.Sprintf("audit-page-%d", i), "",
-			auditEntry(fx.userAccount.GetId(), amount),
-			auditEntry(fx.systemAccount.GetId(), amount[1:])) // credit mirrors the debit
+		mustPost(t, env, fmt.Sprintf("audit-page-%d", i), "",
+			entry(fx.userAccount.GetId(), amount),
+			entry(fx.systemAccount.GetId(), amount[1:])) // credit mirrors the debit
 	}
 
 	var collected []string
 	offset := uint32(0)
 	for page := 0; ; page++ {
-		res, err := env.audit.ListEntries(context.Background(), auditAuthed(t,
+		res, err := env.audit.ListEntries(context.Background(), authed(t,
 			connect.NewRequest(&ledgerv1.ListEntriesRequest{
 				AccountId:  fx.userAccount.GetId(),
 				PageSize:   2,
@@ -544,13 +447,13 @@ func TestListEntriesPagination(t *testing.T) {
 // all touching transactions exactly once with a stable order and correct
 // next_page_offset bookkeeping.
 func TestListWalletTransactionsPagination(t *testing.T) {
-	env := setupAudit(t)
-	fx := newAuditFundedWallet(t, env)
+	env := setup(t)
+	fx := newFundedWallet(t, env)
 
 	for i, amount := range []string{"-1.00", "-2.00", "-3.00"} {
-		auditPost(t, env, fmt.Sprintf("audit-wpage-%d", i), "",
-			auditEntry(fx.userAccount.GetId(), amount),
-			auditEntry(fx.systemAccount.GetId(), amount[1:]))
+		mustPost(t, env, fmt.Sprintf("audit-wpage-%d", i), "",
+			entry(fx.userAccount.GetId(), amount),
+			entry(fx.systemAccount.GetId(), amount[1:]))
 	}
 	// 4 transactions touch the user wallet (funding + 3 debits).
 
@@ -558,7 +461,7 @@ func TestListWalletTransactionsPagination(t *testing.T) {
 	offset := uint32(0)
 	pages := 0
 	for {
-		res, err := env.audit.ListWalletTransactions(context.Background(), auditAuthed(t,
+		res, err := env.audit.ListWalletTransactions(context.Background(), authed(t,
 			connect.NewRequest(&ledgerv1.ListWalletTransactionsRequest{
 				WalletId:   fx.userWallet.GetId(),
 				PageSize:   3,

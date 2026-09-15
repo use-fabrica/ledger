@@ -78,7 +78,16 @@ func (h *AuditHandler) ListWalletTransactions(
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("rpc: wallet_id is required"))
 	}
-	transactions, info, err := h.engine.ListWalletTransactions(ctx, walletID, auditPage(req.Msg.GetPageSize(), req.Msg.GetPageOffset()))
+	var status *ledger.TransactionStatus
+	if req.Msg.Status != nil {
+		mapped := protoStatusToEngine(*req.Msg.Status)
+		if mapped == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("rpc: status must be pending, posted, or voided"))
+		}
+		status = &mapped
+	}
+	transactions, info, err := h.engine.ListWalletTransactions(ctx, walletID, status, auditPage(req.Msg.GetPageSize(), req.Msg.GetPageOffset()))
 	if err != nil {
 		return nil, mapAuditError(err)
 	}

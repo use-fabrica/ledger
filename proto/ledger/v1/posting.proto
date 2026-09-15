@@ -74,16 +74,20 @@ message CreatePendingTransactionRequest {
 
 // PostTransactionRequest settles a pending transaction: the earmarked
 // amounts move from pending to posted and the transaction becomes
-// terminal. Posting a transaction that is already posted or voided is
-// rejected (failed_precondition) — terminal states are final.
+// terminal. Re-posting a transaction that is already posted is a safe
+// retry: it returns the transaction and moves nothing. Posting a voided
+// transaction is rejected (failed_precondition) — a released transaction
+// can never settle.
 message PostTransactionRequest {
   string id = 1;
 }
 
 // VoidTransactionRequest releases a pending transaction's earmark with no
-// posted movement and the transaction becomes terminal. Voiding a
-// transaction that is already posted or voided is rejected
-// (failed_precondition) — terminal states are final.
+// posted movement and the transaction becomes terminal. Re-voiding a
+// transaction that is already voided is a safe retry: it returns the
+// transaction and moves nothing. Voiding a posted transaction is rejected
+// (failed_precondition) — a settled transaction can only be compensated,
+// never clawed back.
 message VoidTransactionRequest {
   string id = 1;
 }

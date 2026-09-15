@@ -18,8 +18,7 @@ import (
 )
 
 // ErrWalletNotFound wraps a lookup or listing scoped to a missing wallet.
-// Defined here rather than in ledger.go (ticket #5's file); the RPC layer
-// maps it to CodeNotFound like the other engine sentinels.
+// The RPC layer maps it to CodeNotFound like the other engine sentinels.
 var ErrWalletNotFound = errors.New("ledger: wallet not found")
 
 // Page is one offset-based page request. Limit is the caller's page size
@@ -61,20 +60,26 @@ func (e *Engine) ListEntries(ctx context.Context, accountID string, page Page) (
 	return entries, info, nil
 }
 
-// ListWalletTransactions returns one page of every posted transaction
-// touching any account of the wallet, chronologically (created_at, id),
-// entries included. A transaction that moves value between two accounts
-// of the same wallet appears exactly once. Status is scoped to 'posted'
-// only for now — pending-state filtering arrives with ticket #5. The
-// wallet must exist.
-func (e *Engine) ListWalletTransactions(ctx context.Context, walletID string, page Page) ([]PostedTransaction, PageInfo, error) {
+// ListWalletTransactions returns one page of every transaction touching
+// any account of the wallet, chronologically (created_at, id), entries
+// included. A transaction that moves value between two accounts of the
+// same wallet appears exactly once. status is an exact filter: nil lists
+// transactions of every status (posted, pending, and voided alike), which
+// gives reconciliation a complete journal instead of only settled
+// movements. The wallet must exist.
+func (e *Engine) ListWalletTransactions(ctx context.Context, walletID string, status *TransactionStatus, page Page) ([]PostedTransaction, PageInfo, error) {
 	if _, err := e.q.GetWallet(ctx, walletID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, PageInfo{}, fmt.Errorf("ledger: %w: %s", ErrWalletNotFound, walletID)
 		}
 		return nil, PageInfo{}, fmt.Errorf("ledger: load wallet: %w", err)
 	}
-	rows, err := e.q.ListWalletPostedTransactions(ctx, store.ListWalletPostedTransactionsParams{
+	filter := pgtype.Text{}
+	if status != nil {
+		filter = pgtype.Text{String: string(*status), Valid: true}
+	}
+	rows, err := e.q.ListWalletTransactions(ctx, store.ListWalletTransactionsParams{
+		Status:   filter,
 		WalletID: walletID,
 		Limit:    page.Limit,
 		Offset:   page.Offset,
